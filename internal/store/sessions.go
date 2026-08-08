@@ -1,0 +1,158 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"github.com/3toInf/hetu/internal/session"
+)
+
+type Session struct {
+	HetuID      string
+	Agent       string
+	ExternalID  string
+	ProjectID   int64
+	Host        string
+	CWD         string
+	Title       string
+	Status      session.Status
+	Driven      bool
+	Unread      bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	LastEventAt *time.Time
+}
+
+type ListFilter struct {
+	ProjectID int64
+	Status    string
+	Agent     string
+	Limit     int
+}
+
+func (s *Store) UpsertSession(ctx context.Context, in Session) (Session, error) {
+	if in.Host == "" {
+		in.Host = "local"
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = time.Now()
+	}
+	in.UpdatedAt = time.Now()
+	driven := 0
+	if in.Driven {
+		driven = 1
+	}
+	unread := 0
+	if in.Unread {
+		unread = 1
+	}
+	var projID any
+	if in.ProjectID != 0 {
+		projID = in.ProjectID
+	}
+	var lastEv any
+	if in.LastEventAt != nil {
+		lastEv = in.LastEventAt.Unix()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions(hetu_id, agent, external_id, project_id, host, cwd, title, status, driven, unread, created_at, updated_at, last_event_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(agent, external_id) DO UPDATE SET
+			hetu_id=excluded.hetu_id,
+			project_id=COALESCE(excluded.project_id, sessions.project_id),
+			host=excluded.host, cwd=excluded.cwd, title=excluded.title,
+			status=excluded.status, driven=excluded.driven, updated_at=excluded.updated_at,
+			last_event_at=COALESCE(excluded.last_event_at, sessions.last_event_at)`,
+		in.HetuID, in.Agent, in.ExternalID, projID, in.Host, in.CWD, in.Title, in.Status, driven, unread, in.CreatedAt.Unix(), in.UpdatedAt.Unix(), lastEv)
+	if err != nil {
+		return Session{}, err
+	}
+	got, ok, err := s.GetSession(ctx, in.HetuID)
+	if err != nil || !ok {
+		return Session{}, err
+	}
+	return got, nil
+}
+
+func (s *Store) GetSession(ctx context.Context, hetuID string) (Session, bool, error) {
+	row := s.db.QueryRowContext(ctx, sessionCols+` FROM sessions WHERE hetu_id=?`, hetuID)
+	out, err := scanSession(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return out, true, nil
+}
+
+const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at`
+
+func scanSession(row interface{ Scan(...any) error }) (Session, error) {
+	var s Session
+	var driven, unread int
+	var ct, ut int64
+	var lastEv *int64
+	if err := row.Scan(&s.HetuID, &s.Agent, &s.ExternalID, &s.ProjectID, &s.Host, &s.CWD, &s.Title, &s.Status, &driven, &unread, &ct, &ut, &lastEv); err != nil {
+		return Session{}, err
+	}
+	s.Driven = driven == 1
+	s.Unread = unread == 1
+	s.CreatedAt = time.Unix(ct, 0)
+	s.UpdatedAt = time.Unix(ut, 0)
+	if lastEv != nil {
+		t := time.Unix(*lastEv, 0)
+		s.LastEventAt = &t
+	}
+	return s, nil
+}
+
+func (s *Store) ListSessions(ctx context.Context, f ListFilter) ([]Session, error) {
+	q := sessionCols + ` FROM sessions WHERE 1=1`
+	var args []any
+	if f.ProjectID != 0 {
+		q += ` AND project_id=?`
+		args = append(args, f.ProjectID)
+	}
+	if f.Status != "" {
+		q += ` AND status=?`
+		args = append(args, f.Status)
+	}
+	if f.Agent != "" {
+		q += ` AND agent=?`
+		args = append(args, f.Agent)
+	}
+	q += ` ORDER BY CASE status
+		WHEN 'Error' THEN 0 WHEN 'Running' THEN 1 WHEN 'Completed' THEN 2 WHEN 'Idle' THEN 3 ELSE 4 END,
+		updated_at DESC`
+	if f.Limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, f.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		se, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, se)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateSessionStatus(ctx context.Context, hetuID string, st session.Status, driven bool) error {
+	d := 0
+	if driven {
+		d = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET status=?, driven=?, updated_at=strftime('%s','now'), last_event_at=strftime('%s','now') WHERE hetu_id=?`,
+		st, d, hetuID)
+	return err
+}

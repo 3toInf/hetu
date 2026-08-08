@@ -91,7 +91,11 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		}
 		out := make([]api.ProjectDTO, 0, len(ps))
 		for _, p := range ps {
-			sess, _ := s.st.ListSessions(ctx, store.ListFilter{ProjectID: p.ID})
+			sess, err := s.st.ListSessions(ctx, store.ListFilter{ProjectID: p.ID})
+			if err != nil {
+				replyErr(w, err)
+				return
+			}
 			out = append(out, api.ProjectDTO{ID: p.ID, Name: p.Name, Path: p.Path, SessionCount: len(sess)})
 		}
 		replyOK(w, out)

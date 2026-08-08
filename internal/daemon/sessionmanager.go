@@ -60,7 +60,10 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 	m.mu.Unlock()
 
 	hetuID := uuid.NewString()
-	proj, _ := m.resolve.ResolveByCWD(ctx, cwd)
+	proj, err := m.resolve.ResolveByCWD(ctx, cwd)
+	if err != nil {
+		return "", err
+	}
 	sess, err := a.Driver().Start(ctx, agent.StartRequest{Mode: agent.StartResume, ExternalID: externalID, CWD: cwd})
 	if err != nil {
 		return "", err

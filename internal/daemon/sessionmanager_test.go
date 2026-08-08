@@ -55,7 +55,9 @@ func TestEnsureAndSubscribe(t *testing.T) {
 	fs.Emit(agent.Event{Type: agent.EventStatus, Status: statusCompletedForTest()})
 	select {
 	case ev := <-sub:
-		_ = ev
+		if ev.Type != agent.EventText || ev.Text != "hi" {
+			t.Fatalf("received unexpected event: got Type=%v, Text=%q; want Type=%v, Text=%q", ev.Type, ev.Text, agent.EventText, "hi")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("did not receive event")
 	}

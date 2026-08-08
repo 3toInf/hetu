@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/project"
@@ -37,6 +36,7 @@ type SessionManager struct {
 
 	mu   sync.Mutex
 	live map[string]*liveSession // hetuID -> live
+	wg   sync.WaitGroup           // tracks pump goroutines
 }
 
 func NewSessionManager(st *store.Store, r *project.Resolver, agents map[string]agent.Agent) *SessionManager {
@@ -65,8 +65,18 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 	if err != nil {
 		return "", err
 	}
-	l := &liveSession{sess: sess}
+
+	// Re-check under lock to prevent TOCTOU race - another caller may have registered this externalID while we were starting the session
 	m.mu.Lock()
+	for hid, l := range m.live {
+		if l.sess.ExternalID() == externalID {
+			m.mu.Unlock()
+			// Close the duplicate session we just created and return the existing one
+			_ = sess.Close()
+			return hid, nil
+		}
+	}
+	l := &liveSession{sess: sess}
 	m.live[hetuID] = l
 	m.mu.Unlock()
 
@@ -76,11 +86,13 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 		Host: "local", CWD: cwd, Status: session.StatusRunning, Driven: true,
 	})
 	// event pump
+	m.wg.Add(1)
 	go m.pump(ctx, hetuID, l)
 	return hetuID, nil
 }
 
 func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession) {
+	defer m.wg.Done()
 	for ev := range l.sess.Events() {
 		l.broadcast(ev)
 		if ev.Type == agent.EventStatus {
@@ -129,15 +141,21 @@ func (m *SessionManager) LiveStatus(hetuID string) (session.Status, bool) {
 
 func (m *SessionManager) Close() error {
 	m.mu.Lock()
-	ids := make([]string, 0, len(m.live))
-	for id, l := range m.live {
-		ids = append(ids, id)
-		_ = l.sess.Close()
+	// Snapshot live sessions and clear the map under lock
+	liveSessions := make([]*liveSession, 0, len(m.live))
+	for _, l := range m.live {
+		liveSessions = append(liveSessions, l)
 	}
 	m.live = map[string]*liveSession{}
 	m.mu.Unlock()
-	// give pumps a moment to flush
-	time.Sleep(20 * time.Millisecond)
+
+	// Close each session (no longer holding manager mutex)
+	for _, l := range liveSessions {
+		_ = l.sess.Close()
+	}
+
+	// Wait for all pump goroutines to finish
+	m.wg.Wait()
 	return nil
 }
 

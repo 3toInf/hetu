@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
@@ -35,7 +36,10 @@ func (s *Store) GetProjectByPath(ctx context.Context, path string) (Project, boo
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, path, created_at FROM projects WHERE path=?`, path).
 		Scan(&p.ID, &p.Name, &p.Path, &ct)
 	if err != nil {
-		return Project{}, false, nil // not found -> ok=false, nil error
+		if err == sql.ErrNoRows {
+			return Project{}, false, nil // genuine not found -> ok=false, nil error
+		}
+		return Project{}, false, err // real database error -> propagate
 	}
 	p.CreatedAt = time.Unix(ct, 0)
 	return p, true, nil

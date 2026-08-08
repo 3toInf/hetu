@@ -55,7 +55,15 @@ func (s *Store) migrate(ctx context.Context) error {
 	sort.Strings(names)
 	for _, name := range names {
 		applied := 0
-		_ = s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE name=?`, name).Scan(&applied)
+		err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE name=?`, name).Scan(&applied)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				// Treat sql.ErrNoRows as "not applied"
+				applied = 0
+			} else {
+				return fmt.Errorf("checking migration %s: %w", name, err)
+			}
+		}
 		if applied > 0 {
 			continue
 		}

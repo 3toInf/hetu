@@ -1,0 +1,8 @@
+/hetu
+/hetud
+/dist/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.superpowers/
+/bin/

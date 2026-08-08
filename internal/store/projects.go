@@ -1,0 +1,61 @@
+package store
+
+import (
+	"context"
+	"time"
+)
+
+type Project struct {
+	ID        int64
+	Name      string
+	Path      string
+	CreatedAt time.Time
+}
+
+// UpsertProject creates a project for a path, or renames if the path already exists.
+func (s *Store) UpsertProject(ctx context.Context, name, path string) (Project, error) {
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO projects(name, path, created_at) VALUES(?,?,?)
+		 ON CONFLICT(path) DO UPDATE SET name=excluded.name`,
+		name, path, now)
+	if err != nil {
+		return Project{}, err
+	}
+	p, ok, err := s.GetProjectByPath(ctx, path)
+	if err != nil || !ok {
+		return Project{}, err
+	}
+	return p, nil
+}
+
+func (s *Store) GetProjectByPath(ctx context.Context, path string) (Project, bool, error) {
+	var p Project
+	var ct int64
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, path, created_at FROM projects WHERE path=?`, path).
+		Scan(&p.ID, &p.Name, &p.Path, &ct)
+	if err != nil {
+		return Project{}, false, nil // not found -> ok=false, nil error
+	}
+	p.CreatedAt = time.Unix(ct, 0)
+	return p, true, nil
+}
+
+func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, path, created_at FROM projects ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		var p Project
+		var ct int64
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &ct); err != nil {
+			return nil, err
+		}
+		p.CreatedAt = time.Unix(ct, 0)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

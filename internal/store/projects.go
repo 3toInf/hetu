@@ -63,3 +63,16 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) ProjectPathByID(ctx context.Context, id int64) (string, bool) {
+	var path string
+	err := s.db.QueryRowContext(ctx, `SELECT path FROM projects WHERE id=?`, id).Scan(&path)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false
+		}
+		// For non-ErrNoRows errors, we also return not-found since this is best-effort for toDTO
+		return "", false
+	}
+	return path, true
+}

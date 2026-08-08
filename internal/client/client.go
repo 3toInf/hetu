@@ -150,6 +150,21 @@ func (c *Client) Search(ctx context.Context, q string) ([]api.SessionDTO, error)
 	return out, nil
 }
 
+func (c *Client) ListAgents(ctx context.Context) ([]api.AgentDTO, error) {
+	r, err := c.call(ctx, "list_agents", api.ListAgentsReq{})
+	if err != nil {
+		return nil, err
+	}
+	if !r.OK {
+		return nil, errors.New(r.Err)
+	}
+	var out []api.AgentDTO
+	if err := json.Unmarshal(r.Body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) Discover(ctx context.Context) error {
 	r, err := c.call(ctx, "discover", api.DiscoverReq{})
 	if err != nil {

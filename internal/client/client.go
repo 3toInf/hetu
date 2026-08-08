@@ -52,7 +52,10 @@ func (c *Client) call(ctx context.Context, op string, body any) (api.Response, e
 		return api.Response{}, err
 	}
 	defer conn.Close()
-	raw, _ := json.Marshal(body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return api.Response{}, err
+	}
 	if err := api.Encode(conn, api.Request{Op: op, Body: raw}); err != nil {
 		return api.Response{}, err
 	}
@@ -74,7 +77,10 @@ func (c *Client) ListProjects(ctx context.Context) ([]api.ProjectDTO, error) {
 		return nil, errors.New(r.Err)
 	}
 	var out []api.ProjectDTO
-	return out, json.Unmarshal(r.Body, &out)
+	if err := json.Unmarshal(r.Body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *Client) ListSessions(ctx context.Context, projectPath, status, agentName string) ([]api.SessionDTO, error) {
@@ -86,7 +92,10 @@ func (c *Client) ListSessions(ctx context.Context, projectPath, status, agentNam
 		return nil, errors.New(r.Err)
 	}
 	var out []api.SessionDTO
-	return out, json.Unmarshal(r.Body, &out)
+	if err := json.Unmarshal(r.Body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *Client) Resume(ctx context.Context, id string) error {
@@ -120,7 +129,9 @@ func (c *Client) Create(ctx context.Context, projectPath, prompt string) (string
 		return "", errors.New(r.Err)
 	}
 	var res struct{ ID string `json:"id"` }
-	_ = json.Unmarshal(r.Body, &res)
+	if err := json.Unmarshal(r.Body, &res); err != nil {
+		return "", err
+	}
 	return res.ID, nil
 }
 
@@ -133,7 +144,10 @@ func (c *Client) Search(ctx context.Context, q string) ([]api.SessionDTO, error)
 		return nil, errors.New(r.Err)
 	}
 	var out []api.SessionDTO
-	return out, json.Unmarshal(r.Body, &out)
+	if err := json.Unmarshal(r.Body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *Client) Discover(ctx context.Context) error {

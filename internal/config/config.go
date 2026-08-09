@@ -13,6 +13,9 @@ func DataDir() string {
 
 func DBPath() string { return filepath.Join(DataDir(), "hetu.sqlite") }
 
+// LockPath returns the daemon's single-instance advisory-lock file.
+func LockPath() string { return filepath.Join(DataDir(), "hetud.lock") }
+
 func EnsureDataDir() error { return os.MkdirAll(DataDir(), 0o700) }
 
 // SocketPath returns the daemon unix-socket path, honoring HETU_SOCKET and GOOS conventions.

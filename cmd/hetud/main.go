@@ -34,6 +34,15 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Single-instance guard: refuse to start if another hetud is already
+	// running, so a second `hetud serve` can't steal the unix socket and orphan
+	// the live process. The lock is held until serveRun returns.
+	lock, err := daemon.AcquireInstanceLock(config.LockPath())
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	// Ensure socket directory exists
 	socketPath := config.SocketPath()
 	socketDir := filepath.Dir(socketPath)

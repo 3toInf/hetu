@@ -62,3 +62,42 @@ func TestEnsureAndSubscribe(t *testing.T) {
 		t.Fatal("did not receive event")
 	}
 }
+
+// TestEnsurePreservesDiscoveredID guards against resume renaming a session's
+// hetu_id: a discovered session is seeded with a known id/external pair, and
+// resuming it must return that same id (not a freshly minted uuid), otherwise
+// the truncated id shown by `hetu sessions` becomes invalid.
+func TestEnsurePreservesDiscoveredID(t *testing.T) {
+	m, _ := newMgr(t)
+	ctx := context.Background()
+
+	const (
+		seedHetu = "abcdef1234567890"
+		ext      = "ext-discovered"
+	)
+	// Seed the store as discovery would: a completed, non-driven session.
+	st := m.store
+	if _, err := st.UpsertSession(ctx, store.Session{
+		HetuID: seedHetu, Agent: "claude", ExternalID: ext, CWD: "/x",
+		Status: session.StatusCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := m.Ensure(ctx, "claude", ext, "/x")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if id != seedHetu {
+		t.Fatalf("Ensure renamed hetu_id: got %q, want %q (resume must preserve the discovered id)", id, seedHetu)
+	}
+
+	// The stored row must still carry the original id.
+	got, ok, _ := st.GetSession(ctx, seedHetu)
+	if !ok {
+		t.Fatal("seeded session disappeared after resume")
+	}
+	if got.HetuID != seedHetu {
+		t.Fatalf("store hetu_id changed to %q", got.HetuID)
+	}
+}

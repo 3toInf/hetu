@@ -59,7 +59,15 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 	}
 	m.mu.Unlock()
 
+	// Reuse the existing session's hetu_id (by agent+external_id) so resuming a
+	// discovered session keeps the id users see in `hetu sessions`. Only mint a
+	// new id for genuinely new sessions.
 	hetuID := uuid.NewString()
+	if externalID != "" {
+		if existing, ok, _ := m.store.GetSessionByExternal(ctx, agentName, externalID); ok {
+			hetuID = existing.HetuID
+		}
+	}
 	proj, err := m.resolve.ResolveByCWD(ctx, cwd)
 	if err != nil {
 		return "", err

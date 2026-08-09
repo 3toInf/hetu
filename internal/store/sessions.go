@@ -93,6 +93,22 @@ func (s *Store) GetSession(ctx context.Context, hetuID string) (Session, bool, e
 	return out, true, nil
 }
 
+// GetSessionByExternal looks up a session by its (agent, external_id) pair —
+// the natural identity used by the upsert conflict clause. It lets Ensure reuse
+// an existing session's hetu_id rather than minting a new one (which would
+// invalidate the id users see in `hetu sessions`).
+func (s *Store) GetSessionByExternal(ctx context.Context, agentName, externalID string) (Session, bool, error) {
+	row := s.db.QueryRowContext(ctx, sessionCols+` FROM sessions WHERE agent=? AND external_id=?`, agentName, externalID)
+	out, err := scanSession(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return out, true, nil
+}
+
 // ResolveSession looks up a session by its full hetu_id or a unique prefix of
 // it. The session table only ever displays truncated ids (see cli.short), so
 // callers must resolve a user-supplied id through here rather than GetSession.

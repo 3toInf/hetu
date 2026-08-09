@@ -124,8 +124,12 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 	case "get_session":
 		var b api.GetSessionReq
 		_ = json.Unmarshal(req.Body, &b)
-		se, ok, err := s.st.GetSession(ctx, b.ID)
-		if err != nil || !ok {
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil {
+			replyErr(w, err)
+			return
+		}
+		if !ok {
 			replyErr(w, errors.New("not found"))
 			return
 		}
@@ -133,21 +137,34 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 	case "resume":
 		var b api.ResumeReq
 		_ = json.Unmarshal(req.Body, &b)
-		se, ok, _ := s.st.GetSession(ctx, b.ID)
-		if !ok {
-			replyErr(w, errors.New("not found"))
-			return
-		}
-		_, err := s.mgr.Ensure(ctx, se.Agent, se.ExternalID, se.CWD)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
 		if err != nil {
 			replyErr(w, err)
 			return
 		}
-		replyOK(w, map[string]any{"id": b.ID, "driven": true})
+		if !ok {
+			replyErr(w, errors.New("not found"))
+			return
+		}
+		_, err = s.mgr.Ensure(ctx, se.Agent, se.ExternalID, se.CWD)
+		if err != nil {
+			replyErr(w, err)
+			return
+		}
+		replyOK(w, map[string]any{"id": se.HetuID, "driven": true})
 	case "send":
 		var b api.SendReq
 		_ = json.Unmarshal(req.Body, &b)
-		if err := s.mgr.Send(ctx, b.ID, b.Prompt); err != nil {
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil {
+			replyErr(w, err)
+			return
+		}
+		if !ok {
+			replyErr(w, errors.New("not found"))
+			return
+		}
+		if err := s.mgr.Send(ctx, se.HetuID, b.Prompt); err != nil {
 			replyErr(w, err)
 			return
 		}
@@ -195,7 +212,16 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 	case "subscribe":
 		var b api.SubscribeReq
 		_ = json.Unmarshal(req.Body, &b)
-		sub, err := s.mgr.Subscribe(b.ID)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil {
+			replyErr(w, err)
+			return
+		}
+		if !ok {
+			replyErr(w, errors.New("not found"))
+			return
+		}
+		sub, err := s.mgr.Subscribe(se.HetuID)
 		if err != nil {
 			replyErr(w, err)
 			return

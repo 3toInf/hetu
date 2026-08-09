@@ -3,10 +3,16 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/3toInf/hetu/internal/session"
 )
+
+// ErrAmbiguousID is returned by ResolveSession when more than one session shares
+// the given id prefix.
+var ErrAmbiguousID = errors.New("ambiguous session id; use more characters")
 
 type Session struct {
 	HetuID      string
@@ -85,6 +91,67 @@ func (s *Store) GetSession(ctx context.Context, hetuID string) (Session, bool, e
 		return Session{}, false, err
 	}
 	return out, true, nil
+}
+
+// GetSessionByExternal looks up a session by its (agent, external_id) pair —
+// the natural identity used by the upsert conflict clause. It lets Ensure reuse
+// an existing session's hetu_id rather than minting a new one (which would
+// invalidate the id users see in `hetu sessions`).
+func (s *Store) GetSessionByExternal(ctx context.Context, agentName, externalID string) (Session, bool, error) {
+	row := s.db.QueryRowContext(ctx, sessionCols+` FROM sessions WHERE agent=? AND external_id=?`, agentName, externalID)
+	out, err := scanSession(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	return out, true, nil
+}
+
+// ResolveSession looks up a session by its full hetu_id or a unique prefix of
+// it. The session table only ever displays truncated ids (see cli.short), so
+// callers must resolve a user-supplied id through here rather than GetSession.
+// It returns ok=false when nothing matches and an error (ErrAmbiguousID) when
+// the prefix matches more than one session.
+func (s *Store) ResolveSession(ctx context.Context, idOrPrefix string) (Session, bool, error) {
+	// Fast path: exact match covers full ids (and any short id stored verbatim).
+	if se, ok, err := s.GetSession(ctx, idOrPrefix); err != nil {
+		return Session{}, false, err
+	} else if ok {
+		return se, true, nil
+	}
+	rows, err := s.db.QueryContext(ctx, sessionCols+` FROM sessions WHERE hetu_id LIKE ? ESCAPE '\'`, likePrefix(idOrPrefix))
+	if err != nil {
+		return Session{}, false, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		se, err := scanSession(rows)
+		if err != nil {
+			return Session{}, false, err
+		}
+		out = append(out, se)
+	}
+	if err := rows.Err(); err != nil {
+		return Session{}, false, err
+	}
+	switch len(out) {
+	case 0:
+		return Session{}, false, nil
+	case 1:
+		return out[0], true, nil
+	default:
+		return Session{}, false, ErrAmbiguousID
+	}
+}
+
+// likePrefix escapes LIKE metacharacters and appends the trailing wildcard,
+// turning an id prefix into a safe LIKE pattern.
+func likePrefix(p string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(p) + `%`
 }
 
 const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at`

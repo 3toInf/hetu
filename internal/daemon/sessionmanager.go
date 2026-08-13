@@ -15,7 +15,24 @@ import (
 type liveSession struct {
 	sess        agent.Session
 	subscribers []chan agent.Event
+	pending     map[string]*pendingEntry
 	mu          sync.Mutex
+}
+
+type pendingEntry struct {
+	PendingApproval
+	ch chan ApprovalDecision
+}
+
+type ApprovalDecision struct {
+	Allow  bool
+	Reason string
+}
+
+type PendingApproval struct {
+	ToolUseID  string
+	ToolName   string
+	ToolInput  string
 }
 
 func (l *liveSession) broadcast(ev agent.Event) {
@@ -87,7 +104,10 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 			return hid, nil
 		}
 	}
-	l := &liveSession{sess: sess}
+	l := &liveSession{
+		sess:    sess,
+		pending: map[string]*pendingEntry{},
+	}
 	m.live[hetuID] = l
 	m.mu.Unlock()
 
@@ -148,6 +168,101 @@ func (m *SessionManager) LiveStatus(hetuID string) (session.Status, bool) {
 		return session.StatusUnknown, false
 	}
 	return l.sess.Status(), true
+}
+
+// readOnlyTools auto-allow without bothering the human. Unknown tools are
+// NOT here → they ask the human (safe default). Extend in v0.3 (allowlist).
+var readOnlyTools = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true}
+
+func (m *SessionManager) RequestPermission(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {
+	if readOnlyTools[toolName] {
+		return ApprovalDecision{Allow: true}, nil
+	}
+	return m.RequestApproval(ctx, hetuID, toolUseID, toolName, toolInput)
+}
+
+func (m *SessionManager) RequestApproval(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {
+	m.mu.Lock()
+	l, ok := m.live[hetuID]
+	m.mu.Unlock()
+	if !ok {
+		return ApprovalDecision{}, errNotDriven
+	}
+	entry := &pendingEntry{
+		PendingApproval: PendingApproval{ToolUseID: toolUseID, ToolName: toolName, ToolInput: toolInput},
+		ch:              make(chan ApprovalDecision, 1),
+	}
+	l.mu.Lock()
+	if l.pending == nil {
+		l.pending = map[string]*pendingEntry{}
+	}
+	l.pending[toolUseID] = entry
+	l.mu.Unlock()
+
+	l.broadcast(agent.Event{Type: agent.EventApproval, ToolName: toolName, ToolUseID: toolUseID,
+		ToolJSON: toolInput, ApprovalState: "pending"})
+	m.setLiveStatus(l, hetuID, session.StatusWaitingForApproval)
+
+	select {
+	case d := <-entry.ch:
+		state := "allowed"
+		if !d.Allow {
+			state = "denied"
+		}
+		l.broadcast(agent.Event{Type: agent.EventApproval, ToolUseID: toolUseID, ApprovalState: state})
+		m.setLiveStatus(l, hetuID, session.StatusRunning)
+		return d, nil
+	case <-ctx.Done():
+		l.mu.Lock()
+		delete(l.pending, toolUseID)
+		l.mu.Unlock()
+		l.broadcast(agent.Event{Type: agent.EventApproval, ToolUseID: toolUseID, ApprovalState: "timeout"})
+		m.setLiveStatus(l, hetuID, session.StatusRunning)
+		return ApprovalDecision{Allow: false, Reason: "approval timed out"}, ctx.Err()
+	}
+}
+
+func (m *SessionManager) ResolveApproval(hetuID, toolUseID string, d ApprovalDecision) bool {
+	m.mu.Lock()
+	l, ok := m.live[hetuID]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	l.mu.Lock()
+	entry, found := l.pending[toolUseID]
+	if found {
+		delete(l.pending, toolUseID)
+	}
+	l.mu.Unlock()
+	if !found {
+		return false
+	}
+	entry.ch <- d
+	return true
+}
+
+func (m *SessionManager) PendingApprovals(hetuID string) []PendingApproval {
+	m.mu.Lock()
+	l, ok := m.live[hetuID]
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]PendingApproval, 0, len(l.pending))
+	for _, e := range l.pending {
+		out = append(out, e.PendingApproval)
+	}
+	return out
+}
+
+// setLiveStatus is a helper that updates the session status in-memory, in the store, and via broadcast
+func (m *SessionManager) setLiveStatus(l *liveSession, hetuID string, st session.Status) {
+	_ = l.sess.SetStatus(st)
+	_ = m.store.UpdateSessionStatus(context.Background(), hetuID, st, true)
+	l.broadcast(agent.Event{Type: agent.EventStatus, Status: st})
 }
 
 func (m *SessionManager) Close() error {

@@ -105,6 +105,11 @@ func (s *claudeSession) Status() session.Status {
 	return session.StatusUnknown
 }
 
+func (s *claudeSession) SetStatus(st session.Status) error {
+	s.status.Store(st)
+	return nil
+}
+
 func (s *claudeSession) Send(ctx context.Context, prompt string) error {
 	// stream-json user message envelope
 	msg := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":` + jsonQuote(prompt) + `}]}}` + "\n"

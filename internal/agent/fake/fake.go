@@ -30,7 +30,7 @@ func (s *Session) Status() session.Status {
 	s.mu.Lock(); defer s.mu.Unlock()
 	return s.status
 }
-func (s *Session) SetStatus(st session.Status) { s.mu.Lock(); s.status = st; s.mu.Unlock() }
+func (s *Session) SetStatus(st session.Status) error { s.mu.Lock(); s.status = st; s.mu.Unlock(); return nil }
 func (s *Session) Events() <-chan agent.Event   { return s.events }
 func (s *Session) Emit(e agent.Event)           { s.events <- e }
 func (s *Session) Send(_ context.Context, p string) error {

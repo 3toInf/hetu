@@ -23,3 +23,12 @@ func TestStatusStringAndParse(t *testing.T) {
 		t.Error("ParseStatus should reject unknown values")
 	}
 }
+
+func TestParseStatusWaitingStates(t *testing.T) {
+	for _, s := range []Status{StatusWaitingForApproval, StatusWaitingForInput} {
+		got, ok := ParseStatus(string(s))
+		if !ok || got != s {
+			t.Fatalf("ParseStatus(%q) = %q,%v; want %q,true", s, got, ok, s)
+		}
+	}
+}

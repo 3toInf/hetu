@@ -74,3 +74,60 @@ func TestResolveSessionAmbiguous(t *testing.T) {
 		t.Fatalf("expected unique match, got ok=%v err=%v", ok, err)
 	}
 }
+
+func TestMarkReadClearsUnread(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	se, _ := st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "e1", Status: session.StatusRunning, Unread: true})
+	if !se.Unread {
+		t.Fatal("expected unread after upsert")
+	}
+	if err := st.MarkRead(ctx, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, _ := st.GetSession(ctx, "h1")
+	if !ok || got.Unread {
+		t.Fatalf("expected unread cleared, got %+v", got)
+	}
+	if got.LastViewedAt == nil {
+		t.Fatal("expected last_viewed_at set")
+	}
+}
+
+func TestListSessionsWaitingFirst(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "run", Agent: "claude", ExternalID: "e1", Status: session.StatusRunning})
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "wait", Agent: "claude", ExternalID: "e2", Status: session.StatusWaitingForApproval})
+	list, err := st.ListSessions(ctx, ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) < 2 || list[0].HetuID != "wait" {
+		t.Fatalf("expected waiting first, got order %v", ids(list))
+	}
+}
+
+func TestCountAttention(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	p, _ := st.UpsertProject(ctx, "P", "/p")
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "a", Agent: "claude", ExternalID: "e1", ProjectID: p.ID, Status: session.StatusWaitingForApproval})
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "b", Agent: "claude", ExternalID: "e2", ProjectID: p.ID, Status: session.StatusCompleted, Unread: true})
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "c", Agent: "claude", ExternalID: "e3", ProjectID: p.ID, Status: session.StatusCompleted})
+	n, err := st.CountAttention(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("CountAttention = %d, want 2", n)
+	}
+}
+
+func ids(s []Session) []string {
+	out := make([]string, len(s))
+	for i, x := range s {
+		out[i] = x.HetuID
+	}
+	return out
+}

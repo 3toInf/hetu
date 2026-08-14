@@ -8,6 +8,7 @@ import (
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/agent/fake"
+	"github.com/3toInf/hetu/internal/notify"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -115,6 +116,33 @@ func newDrivenManager(t *testing.T) (*SessionManager, string) {
 		t.Fatal("session not live after Ensure")
 	}
 	return m, hid
+}
+
+// newDrivenManagerWithNotifier creates a SessionManager with a RecordingNotifier for testing
+func newDrivenManagerWithNotifier(t *testing.T) (*SessionManager, string, *notify.RecordingNotifier, *fake.Session) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	r := project.NewResolver(st)
+	fs := fake.NewSession("h1", "ext1", statusRunningForTest())
+	fa := &fake.Agent{N: "claude", Drv: &fake.Driver{OnStart: func(_ context.Context, _ agent.StartRequest) (agent.Session, error) {
+		return fs, nil
+	}}}
+
+	// Create a recording notifier for testing
+	fakeNotifier := &notify.RecordingNotifier{}
+
+	m := newSessionManagerWithNotifier(st, r, map[string]agent.Agent{"claude": fa}, fakeNotifier)
+
+	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Verify the session is actually live by checking status
+	if _, ok := m.LiveStatus(hid); !ok {
+		t.Fatal("session not live after Ensure")
+	}
+	return m, hid, fakeNotifier, fs
 }
 
 // waitForApprovalPending waits until an approval pending event is seen for the given toolUseID
@@ -264,4 +292,65 @@ func cancelCtx(ctx context.Context) context.Context {
 		cancel()
 	}()
 	return ctx
+}
+
+func TestPumpSetsUnreadAndNotifiesOnWaiting(t *testing.T) {
+	mgr, hid, fake, fs := newDrivenManagerWithNotifier(t)
+	ctx := context.Background()
+	evs, err := mgr.Subscribe(hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a text event to set unread
+	fs.Emit(agent.Event{Type: agent.EventText, Text: "hi", Seq: 1})
+
+	// Wait for the event to be processed
+	select {
+	case ev := <-evs:
+		if ev.Type != agent.EventText {
+			t.Fatalf("expected text event, got %v", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for text event")
+	}
+
+	// Check that unread=1
+	se, ok, _ := mgr.store.GetSession(ctx, hid)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if !se.Unread {
+		t.Error("expected unread=1 after pump event")
+	}
+
+	// Now simulate a status transition to WaitingForApproval
+	fs.Emit(agent.Event{Type: agent.EventStatus, Status: session.StatusWaitingForApproval, Seq: 2})
+
+	// Wait for the status event
+	select {
+	case ev := <-evs:
+		if ev.Type != agent.EventStatus {
+			t.Fatalf("expected status event, got %v", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for status event")
+	}
+
+	// Give the pump a moment to process the status event and trigger notification
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that a notification was sent (use thread-safe getter)
+	sent := fake.GetSent()
+	if len(sent) == 0 {
+		t.Errorf("expected at least one notification, got none")
+	} else {
+		lastNotif := sent[len(sent)-1]
+		if lastNotif.Body == "" {
+			t.Errorf("expected notification with non-empty body, got %+v", lastNotif)
+		}
+		if lastNotif.Title != "hetu" {
+			t.Errorf("expected title 'hetu', got %q", lastNotif.Title)
+		}
+	}
 }

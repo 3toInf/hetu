@@ -241,6 +241,12 @@ func (s *Store) MarkRead(ctx context.Context, hetuID string) error {
 	return err
 }
 
+func (s *Store) MarkUnread(ctx context.Context, hetuID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET unread=1, last_event_at=strftime('%s','now') WHERE hetu_id=?`, hetuID)
+	return err
+}
+
 func (s *Store) CountAttention(ctx context.Context, projectID int64) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,

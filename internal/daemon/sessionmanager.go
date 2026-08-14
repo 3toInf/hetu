@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/3toInf/hetu/internal/agent"
+	"github.com/3toInf/hetu/internal/notify"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -47,9 +48,10 @@ func (l *liveSession) broadcast(ev agent.Event) {
 }
 
 type SessionManager struct {
-	store   *store.Store
-	resolve *project.Resolver
-	agents  map[string]agent.Agent
+	store    *store.Store
+	resolve  *project.Resolver
+	agents   map[string]agent.Agent
+	notifier notify.Notifier
 
 	mu   sync.Mutex
 	live map[string]*liveSession // hetuID -> live
@@ -57,7 +59,24 @@ type SessionManager struct {
 }
 
 func NewSessionManager(st *store.Store, r *project.Resolver, agents map[string]agent.Agent) *SessionManager {
-	return &SessionManager{store: st, resolve: r, agents: agents, live: map[string]*liveSession{}}
+	return &SessionManager{
+		store:    st,
+		resolve:  r,
+		agents:   agents,
+		notifier: notify.NewDesktop(),
+		live:     map[string]*liveSession{},
+	}
+}
+
+// newSessionManagerWithNotifier is a test-only constructor that allows injecting a custom notifier
+func newSessionManagerWithNotifier(st *store.Store, r *project.Resolver, agents map[string]agent.Agent, n notify.Notifier) *SessionManager {
+	return &SessionManager{
+		store:    st,
+		resolve:  r,
+		agents:   agents,
+		notifier: n,
+		live:     map[string]*liveSession{},
+	}
 }
 
 // Ensure makes the session driven (resume-or-new) and returns its Hetu id.
@@ -124,11 +143,19 @@ func (m *SessionManager) Ensure(ctx context.Context, agentName, externalID, cwd 
 
 func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession) {
 	defer m.wg.Done()
+	var last session.Status
 	for ev := range l.sess.Events() {
 		l.broadcast(ev)
-		if ev.Type == agent.EventStatus {
+		switch ev.Type {
+		case agent.EventStatus:
 			_ = m.store.UpdateSessionStatus(ctx, hetuID, ev.Status, true)
-			_ = m.store.AppendEvent(ctx, hetuID, ev.Seq, string(ev.Type), ev.Text+ev.ToolName)
+			m.maybeNotify(hetuID, ev.Status, &last)
+			last = ev.Status
+		case agent.EventApproval:
+			_ = m.store.AppendEvent(ctx, hetuID, ev.Seq, "approval", ev.ToolName+":"+ev.ApprovalState)
+			m.markUnread(ctx, hetuID)
+		default:
+			m.markUnread(ctx, hetuID)
 		}
 	}
 	// session closed: final status
@@ -263,6 +290,29 @@ func (m *SessionManager) setLiveStatus(l *liveSession, hetuID string, st session
 	_ = l.sess.SetStatus(st)
 	_ = m.store.UpdateSessionStatus(context.Background(), hetuID, st, true)
 	l.broadcast(agent.Event{Type: agent.EventStatus, Status: st})
+}
+
+// markUnread marks the session as unread
+func (m *SessionManager) markUnread(ctx context.Context, hetuID string) {
+	_ = m.store.MarkUnread(ctx, hetuID)
+}
+
+// maybeNotify sends a desktop notification when the session status transitions to a waiting/error/completed state
+func (m *SessionManager) maybeNotify(hetuID string, cur session.Status, last *session.Status) {
+	// No transition if current equals last (and last is set)
+	if last != nil && cur == *last {
+		return
+	}
+
+	switch cur {
+	case session.StatusWaitingForApproval, session.StatusWaitingForInput, session.StatusCompleted, session.StatusError:
+		se, ok, _ := m.store.GetSession(context.Background(), hetuID)
+		body := string(cur)
+		if ok && se.Title != "" {
+			body = se.Title + " · " + string(cur)
+		}
+		_ = m.notifier.Notify(notify.Notification{Title: "hetu", Body: body})
+	}
 }
 
 func (m *SessionManager) Close() error {

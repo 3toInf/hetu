@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/3toInf/hetu/internal/api"
+	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
 )
 
@@ -312,9 +313,9 @@ func toDTO(st *store.Store, se store.Session) api.SessionDTO {
 	}
 
 	// Determine NeedsAttention: sessions that need user attention
-	needsAttention := se.Status == "waiting_for_approval" ||
-		se.Status == "waiting_for_input" ||
-		se.Status == "error"
+	needsAttention := se.Status == session.StatusWaitingForApproval ||
+		se.Status == session.StatusWaitingForInput ||
+		se.Status == session.StatusError
 
 	var lastViewed int64
 	if se.LastViewedAt != nil {

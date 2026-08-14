@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/3toInf/hetu/internal/api"
 	"github.com/3toInf/hetu/internal/session"
@@ -277,6 +278,23 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			return
 		}
 		replyOK(w, map[string]any{"ok": true})
+	case "permission_request":
+		var b api.PermissionRequestReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, _ := s.st.GetSessionByExternal(ctx, "claude", b.SessionID)
+		if !ok {
+			replyErr(w, errors.New("session not driven"))
+			return
+		}
+		// Use a ctx capped below the hook's 540s so we return before claude times out.
+		rctx, cancel := context.WithTimeout(ctx, 535*time.Second)
+		defer cancel()
+		d, err := s.mgr.RequestPermission(rctx, se.HetuID, b.ToolUseID, b.ToolName, b.ToolInput)
+		allow := d.Allow
+		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			allow = false
+		}
+		replyOK(w, api.PermissionRequestResp{Allow: allow, Reason: d.Reason})
 	default:
 		replyErr(w, errors.New("unknown op: "+req.Op))
 	}

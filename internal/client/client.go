@@ -199,6 +199,21 @@ func (c *Client) MarkRead(ctx context.Context, id string) error {
 	return nil
 }
 
+func (c *Client) RequestPermission(ctx context.Context, sessionID, toolName, toolInput, toolUseID string) (bool, string, error) {
+	r, err := c.call(ctx, "permission_request", api.PermissionRequestReq{SessionID: sessionID, ToolName: toolName, ToolInput: toolInput, ToolUseID: toolUseID})
+	if err != nil {
+		return false, "", err
+	}
+	if !r.OK {
+		return false, "", errors.New(r.Err)
+	}
+	var res api.PermissionRequestResp
+	if err := json.Unmarshal(r.Body, &res); err != nil {
+		return false, "", err
+	}
+	return res.Allow, res.Reason, nil
+}
+
 func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, error) {
 	conn, err := c.ensureConn(ctx)
 	if err != nil {

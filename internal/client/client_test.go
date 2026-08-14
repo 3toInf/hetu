@@ -150,6 +150,19 @@ func (ts *testServer) seedUnreadSession(ctx context.Context) string {
 	return hid.HetuID
 }
 
+// pushFakeEvent pushes an event through the fake session's event stream
+func (ts *testServer) pushFakeEvent(hetuID string, ev agent.Event) {
+	sess, ok := ts.Mgr.LiveSession(hetuID)
+	if !ok {
+		panic("session not live")
+	}
+	if fs, ok := sess.(*fake.Session); ok {
+		fs.Emit(ev)
+	} else {
+		panic("session not fake")
+	}
+}
+
 func TestApproveResolvesPending(t *testing.T) {
 	srv := startTestServer(t)
 	ctx := context.Background()
@@ -195,5 +208,30 @@ func TestMarkReadClearsUnread(t *testing.T) {
 	}
 	if found.Unread {
 		t.Errorf("expected Unread=false after MarkRead, got true")
+	}
+}
+
+func TestWatchReceivesEvents(t *testing.T) {
+	srv := startTestServer(t)
+	ctx := context.Background()
+	hid := srv.ensureDrivenSession(ctx)
+
+	ch, err := srv.Client.Watch(ctx, hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the watch goroutine a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	srv.pushFakeEvent(hid, agent.Event{Type: agent.EventText, Text: "hello", Seq: 1})
+
+	select {
+	case ev := <-ch:
+		if ev.Text != "hello" || ev.Seq != 1 {
+			t.Fatalf("got %+v, expected Text='hello', Seq=1", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not receive event")
 	}
 }

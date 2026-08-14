@@ -24,6 +24,7 @@ type CreateReq struct{ ProjectPath string `json:"project_path"`; Prompt string `
 type SearchReq struct{ Q string `json:"q"` }
 type DiscoverReq struct{}
 type SubscribeReq struct{ ID string `json:"id"` }
+type WatchReq struct{ ID string `json:"id"` }
 type ApproveReq struct{ ID string `json:"id"`; ToolUseID string `json:"tool_use_id,omitempty"`; Allow bool `json:"allow"`; Reason string `json:"reason,omitempty"` }
 type MarkReadReq struct{ ID string `json:"id"` }
 

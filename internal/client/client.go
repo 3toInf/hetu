@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/api"
 )
 
@@ -196,6 +197,56 @@ func (c *Client) MarkRead(ctx context.Context, id string) error {
 		return errors.New(r.Err)
 	}
 	return nil
+}
+
+func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, error) {
+	conn, err := c.ensureConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(api.WatchReq{ID: id})
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	if err := api.Encode(conn, api.Request{Op: "watch", Body: body}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	out := make(chan agent.Event, 64)
+	go func() {
+		defer conn.Close()
+		defer close(out)
+		dec := json.NewDecoder(conn)
+		for {
+			var resp api.Response
+			if err := dec.Decode(&resp); err != nil {
+				// EOF or decode error
+				return
+			}
+			if !resp.OK {
+				return
+			}
+			var ev agent.Event
+			if err := json.Unmarshal(resp.Body, &ev); err == nil {
+				out <- ev
+			} else {
+				// failed to unmarshal event body
+				return
+			}
+		}
+	}()
+
+	// Close connection when context is cancelled to avoid goroutine leak
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
+	return out, nil
 }
 
 // startDaemon spawns hetud detached (best-effort).

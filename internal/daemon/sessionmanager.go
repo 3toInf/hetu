@@ -197,6 +197,17 @@ func (m *SessionManager) LiveStatus(hetuID string) (session.Status, bool) {
 	return l.sess.Status(), true
 }
 
+// LiveSession returns the underlying agent.Session for a live session (test-only)
+func (m *SessionManager) LiveSession(hetuID string) (agent.Session, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.live[hetuID]
+	if !ok {
+		return nil, false
+	}
+	return l.sess, true
+}
+
 // readOnlyTools auto-allow without bothering the human. Unknown tools are
 // NOT here → they ask the human (safe default). Extend in v0.3 (allowlist).
 var readOnlyTools = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true}

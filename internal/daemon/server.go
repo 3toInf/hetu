@@ -211,7 +211,7 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			_ = s.dsc.Run(ctx)
 		}
 		replyOK(w, map[string]any{"ok": true})
-	case "subscribe":
+	case "subscribe", "watch":
 		var b api.SubscribeReq
 		_ = json.Unmarshal(req.Body, &b)
 		se, ok, err := s.st.ResolveSession(ctx, b.ID)
@@ -228,9 +228,9 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			replyErr(w, err)
 			return
 		}
-		enc := json.NewEncoder(w)
 		for ev := range sub {
-			_ = enc.Encode(map[string]any{"ok": true, "body": ev})
+			body, _ := json.Marshal(ev)
+			_ = api.Encode(w, api.Response{OK: true, Body: body})
 		}
 	case "approve":
 		var b api.ApproveReq

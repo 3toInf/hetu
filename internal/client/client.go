@@ -176,6 +176,28 @@ func (c *Client) Discover(ctx context.Context) error {
 	return nil
 }
 
+func (c *Client) Approve(ctx context.Context, id, toolUseID string, allow bool, reason string) error {
+	r, err := c.call(ctx, "approve", api.ApproveReq{ID: id, ToolUseID: toolUseID, Allow: allow, Reason: reason})
+	if err != nil {
+		return err
+	}
+	if !r.OK {
+		return errors.New(r.Err)
+	}
+	return nil
+}
+
+func (c *Client) MarkRead(ctx context.Context, id string) error {
+	r, err := c.call(ctx, "mark_read", api.MarkReadReq{ID: id})
+	if err != nil {
+		return err
+	}
+	if !r.OK {
+		return errors.New(r.Err)
+	}
+	return nil
+}
+
 // startDaemon spawns hetud detached (best-effort).
 func startDaemon() error {
 	exe, err := exec.LookPath("hetud")

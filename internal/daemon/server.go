@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -230,6 +231,46 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		for ev := range sub {
 			_ = enc.Encode(map[string]any{"ok": true, "body": ev})
 		}
+	case "approve":
+		var b api.ApproveReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil || !ok {
+			replyErr(w, errOrNotFound(err, ok))
+			return
+		}
+		pending := s.mgr.PendingApprovals(se.HetuID)
+		toolID := b.ToolUseID
+		if toolID == "" {
+			if len(pending) == 0 {
+				replyErr(w, errors.New("no pending approval"))
+				return
+			}
+			if len(pending) > 1 {
+				replyErr(w, fmt.Errorf("multiple pending; specify --tool: %v", toolIDs(pending)))
+				return
+			}
+			toolID = pending[0].ToolUseID
+		}
+		found := s.mgr.ResolveApproval(se.HetuID, toolID, ApprovalDecision{Allow: b.Allow, Reason: b.Reason})
+		if !found {
+			replyErr(w, errors.New("no matching pending approval"))
+			return
+		}
+		replyOK(w, map[string]any{"ok": true})
+	case "mark_read":
+		var b api.MarkReadReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil || !ok {
+			replyErr(w, errOrNotFound(err, ok))
+			return
+		}
+		if err := s.st.MarkRead(ctx, se.HetuID); err != nil {
+			replyErr(w, err)
+			return
+		}
+		replyOK(w, map[string]any{"ok": true})
 	default:
 		replyErr(w, errors.New("unknown op: "+req.Op))
 	}
@@ -244,6 +285,24 @@ func replyErr(w io.Writer, err error) {
 	api.Encode(w, api.Response{OK: false, Err: err.Error()})
 }
 
+func errOrNotFound(err error, ok bool) error {
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not found")
+	}
+	return nil
+}
+
+func toolIDs(pending []PendingApproval) []string {
+	ids := make([]string, len(pending))
+	for i, p := range pending {
+		ids[i] = p.ToolUseID
+	}
+	return ids
+}
+
 func toDTO(st *store.Store, se store.Session) api.SessionDTO {
 	var path string
 	if se.ProjectID != 0 {
@@ -251,15 +310,29 @@ func toDTO(st *store.Store, se store.Session) api.SessionDTO {
 			path = p
 		}
 	}
+
+	// Determine NeedsAttention: sessions that need user attention
+	needsAttention := se.Status == "waiting_for_approval" ||
+		se.Status == "waiting_for_input" ||
+		se.Status == "error"
+
+	var lastViewed int64
+	if se.LastViewedAt != nil {
+		lastViewed = se.LastViewedAt.Unix()
+	}
+
 	return api.SessionDTO{
-		HetuID:     se.HetuID,
-		Agent:      se.Agent,
-		ExternalID: se.ExternalID,
-		ProjectPath: path,
-		CWD:        se.CWD,
-		Title:      se.Title,
-		Status:     string(se.Status),
-		Driven:     se.Driven,
-		UpdatedAt:  se.UpdatedAt.Unix(),
+		HetuID:         se.HetuID,
+		Agent:          se.Agent,
+		ExternalID:     se.ExternalID,
+		ProjectPath:    path,
+		CWD:            se.CWD,
+		Title:          se.Title,
+		Status:         string(se.Status),
+		Driven:         se.Driven,
+		Unread:         se.Unread,
+		NeedsAttention: needsAttention,
+		LastViewedAt:   lastViewed,
+		UpdatedAt:      se.UpdatedAt.Unix(),
 	}
 }

@@ -193,7 +193,7 @@ func TestNewRootCmd(t *testing.T) {
 	}
 
 	// Check that all subcommands are present
-	expectedCommands := []string{"sessions", "session", "new", "resume", "send", "search", "projects", "agents", "discover"}
+	expectedCommands := []string{"sessions", "session", "new", "resume", "send", "search", "projects", "agents", "discover", "approve", "deny"}
 	for _, cmdName := range expectedCommands {
 		found := false
 		for _, cmd := range root.Commands() {
@@ -276,4 +276,72 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+func TestApproveCmd(t *testing.T) {
+	srv := startTestServer(t)
+	ctx := context.Background()
+	hid := srv.ensureDrivenSession(ctx)
+
+	// Set HETU_SOCKET to point to test server
+	t.Setenv("HETU_SOCKET", srv.sock)
+
+	// Arm a pending approval
+	go srv.Mgr.RequestApproval(ctx, hid, "tu", "Bash", "{}")
+	srv.waitForPending(t, hid, "tu")
+
+	// Run approve command
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"approve", hid, "--tool", "tu"})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	output := out.String()
+	if !contains(output, "approved") {
+		t.Fatalf("expected output to contain 'approved', got: %s", output)
+	}
+
+	// Assert pending cleared
+	if pending := srv.Mgr.PendingApprovals(hid); len(pending) != 0 {
+		t.Fatalf("expected no pending approvals after approve, got: %v", pending)
+	}
+}
+
+func TestDenyCmd(t *testing.T) {
+	srv := startTestServer(t)
+	ctx := context.Background()
+	hid := srv.ensureDrivenSession(ctx)
+
+	// Set HETU_SOCKET to point to test server
+	t.Setenv("HETU_SOCKET", srv.sock)
+
+	// Arm a pending approval
+	go srv.Mgr.RequestApproval(ctx, hid, "tu2", "Bash", "{}")
+	srv.waitForPending(t, hid, "tu2")
+
+	// Run deny command
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"deny", hid, "--tool", "tu2", "--reason", "test rejection"})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("deny failed: %v", err)
+	}
+
+	output := out.String()
+	if !contains(output, "denied") {
+		t.Fatalf("expected output to contain 'denied', got: %s", output)
+	}
+
+	// Assert pending cleared
+	if pending := srv.Mgr.PendingApprovals(hid); len(pending) != 0 {
+		t.Fatalf("expected no pending approvals after deny, got: %v", pending)
+	}
 }

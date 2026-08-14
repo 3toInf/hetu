@@ -12,7 +12,8 @@ import (
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{Use: "hetu", Short: "Unified AI Coding session workspace"}
 	root.AddCommand(newSessionsCmd(), newSessionCmd(), newNewCmd(), newResumeCmd(),
-		newSendCmd(), newSearchCmd(), newProjectsCmd(), newAgentsCmd(), newDiscoverCmd(), newHookPermissionCmd())
+		newSendCmd(), newSearchCmd(), newProjectsCmd(), newAgentsCmd(), newDiscoverCmd(), newHookPermissionCmd(),
+		newApproveCmd(), newDenyCmd())
 	return root
 }
 

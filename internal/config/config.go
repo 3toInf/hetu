@@ -35,3 +35,6 @@ func SocketPath() string {
 	}
 	return filepath.Join(DataDir(), "hetu.sock")
 }
+
+// ClaudeSettingsPath returns the path to the Claude settings file for hook injection.
+func ClaudeSettingsPath() string { return filepath.Join(DataDir(), "claude-settings.json") }

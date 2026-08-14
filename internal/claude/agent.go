@@ -3,8 +3,10 @@ package claude
 import "github.com/3toInf/hetu/internal/agent"
 
 type Options struct {
-	Binary      string
-	ProjectsDir string // optional override for DiscoverySource tests
+	Binary       string
+	ProjectsDir  string // optional override for DiscoverySource tests
+	SocketPath   string // path to hetu socket for HETU_SOCKET env
+	SettingsPath string // path to Claude settings file for --settings flag
 }
 
 type ClaudeAgent struct {
@@ -15,7 +17,11 @@ type ClaudeAgent struct {
 func NewAgent(opts Options) *ClaudeAgent {
 	return &ClaudeAgent{
 		disc: &Discovery{ProjectsDir: opts.ProjectsDir},
-		drv:  &Driver{Binary: opts.Binary},
+		drv:  &Driver{
+			Binary:      opts.Binary,
+			SocketPath:  opts.SocketPath,
+			SettingsPath: opts.SettingsPath,
+		},
 	}
 }
 

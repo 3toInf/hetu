@@ -56,7 +56,10 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 	}
 	defer st.Close()
 
-	claudeAgent := claude.NewAgent(claude.Options{})
+	claudeAgent := claude.NewAgent(claude.Options{
+		SocketPath:   socketPath,
+		SettingsPath: config.ClaudeSettingsPath(),
+	})
 	resolver := project.NewResolver(st)
 	agents := map[string]agent.Agent{"claude": claudeAgent}
 	mgr := daemon.NewSessionManager(st, resolver, agents)

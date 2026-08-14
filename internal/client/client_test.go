@@ -81,15 +81,19 @@ func startTestServer(t *testing.T) *testServer {
 
 	sock := tempPath(t) + ".sock"
 	go srv.Serve(ctx, sock)
-	t.Cleanup(func() { srv.Shutdown(ctx); cancel() })
 
-	// Wait for socket to be available
+	// Wait for server to be ready to avoid race during cleanup
 	for i := 0; i < 50; i++ {
 		if _, err := net.Dial("unix", sock); err == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+
+	// Additional wait to ensure Server.ln is fully assigned (avoid race in cleanup)
+	time.Sleep(50 * time.Millisecond)
+
+	t.Cleanup(func() { srv.Shutdown(ctx); cancel() })
 
 	c := New(sock)
 	c.NoAutostart = true
@@ -233,5 +237,66 @@ func TestWatchReceivesEvents(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("watch did not receive event")
+	}
+}
+
+func TestWatchCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	st, _ := store.Open(ctx, tempPath(t))
+	defer st.Close()
+
+	// Create a fake agent and session
+	fs := fake.NewSession("h1", "ext1", session.StatusRunning)
+	fa := &fake.Agent{N: "claude", Drv: &fake.Driver{OnStart: func(_ context.Context, _ agent.StartRequest) (agent.Session, error) {
+		return fs, nil
+	}}}
+
+	mgr := daemon.NewSessionManager(st, project.NewResolver(st), map[string]agent.Agent{"claude": fa})
+	srv := daemon.NewServer(st, mgr, nil)
+
+	sock := tempPath(t) + ".sock"
+	go srv.Serve(ctx, sock)
+
+	// Wait for server to be ready
+	for i := 0; i < 50; i++ {
+		if _, err := net.Dial("unix", sock); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	c := New(sock)
+	c.NoAutostart = true
+
+	hid, err := mgr.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch, err := c.Watch(ctx, hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Give the watch goroutine a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel the context
+	cancel()
+
+	// Assert the channel closes within a timeout (proving decoder goroutine exits and doesn't leak)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				srv.Shutdown(context.Background())
+				return // channel closed as expected
+			}
+		case <-deadline:
+			srv.Shutdown(context.Background())
+			t.Fatal("watch channel did not close after context cancel (possible goroutine leak)")
+		}
 	}
 }

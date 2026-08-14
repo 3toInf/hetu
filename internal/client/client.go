@@ -232,7 +232,10 @@ func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, erro
 			}
 			var ev agent.Event
 			if err := json.Unmarshal(resp.Body, &ev); err == nil {
-				out <- ev
+				select {
+				case out <- ev:
+				default: // buffer full: drop (consumer too slow; matches broadcast semantics)
+				}
 			} else {
 				// failed to unmarshal event body
 				return

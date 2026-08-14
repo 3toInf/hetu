@@ -229,8 +229,13 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			return
 		}
 		for ev := range sub {
-			body, _ := json.Marshal(ev)
-			_ = api.Encode(w, api.Response{OK: true, Body: body})
+			body, err := json.Marshal(ev)
+			if err != nil {
+				break
+			}
+			if err := api.Encode(w, api.Response{OK: true, Body: body}); err != nil {
+				break
+			}
 		}
 	case "approve":
 		var b api.ApproveReq

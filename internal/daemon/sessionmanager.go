@@ -155,34 +155,13 @@ func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession
 			_ = m.store.AppendEvent(ctx, hetuID, ev.Seq, "approval", ev.ToolName+":"+ev.ApprovalState)
 			m.markUnread(ctx, hetuID)
 		case agent.EventMeta:
-			// Persist the learned external_id. Meta events are bookkeeping, not user-visible.
+			// Persist the learned external_id (claude mints its session id
+			// only after start). Bookkeeping — not broadcast to subscribers.
 			if ev.ExternalID != "" {
-				// Fetch existing session row to preserve other fields.
-				existing, ok, err := m.store.GetSession(ctx, hetuID)
-				if err == nil && ok {
-					// Update external_id by deleting and re-inserting.
-					// The UpsertSession conflict clause on (agent, external_id) makes
-					// it hard to update external_id directly, so we delete and recreate.
-					_ = m.store.DeleteSession(ctx, hetuID)
-					_, _ = m.store.UpsertSession(ctx, store.Session{
-						HetuID:     existing.HetuID,
-						Agent:      existing.Agent,
-						ExternalID: ev.ExternalID,
-						ProjectID:  existing.ProjectID,
-						Host:       existing.Host,
-						CWD:        existing.CWD,
-						Title:      existing.Title,
-						Status:     existing.Status,
-						Driven:     existing.Driven,
-						Unread:     existing.Unread,
-						CreatedAt:  existing.CreatedAt,
-						UpdatedAt:  existing.UpdatedAt,
-						LastEventAt: existing.LastEventAt,
-						LastViewedAt: existing.LastViewedAt,
-					})
+				if existing, ok, err := m.store.GetSession(ctx, hetuID); err == nil && ok {
+					_ = m.store.UpdateExternalID(ctx, existing.Agent, hetuID, ev.ExternalID)
 				}
 			}
-			// Do not broadcast meta events to subscribers (internal bookkeeping).
 		default:
 			m.markUnread(ctx, hetuID)
 		}

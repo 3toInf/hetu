@@ -247,9 +247,23 @@ func (s *Store) MarkUnread(ctx context.Context, hetuID string) error {
 	return err
 }
 
-// DeleteSession removes a session from the store by hetu_id.
-func (s *Store) DeleteSession(ctx context.Context, hetuID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE hetu_id=?`, hetuID)
+// UpdateExternalID records a learned external id on an existing session row
+// (claude mints its session id only after start). A row that discovery
+// created meanwhile for the same (agent, external_id) is removed so the
+// driven session's hetu_id stays the single identity. Unlike delete+reinsert
+// this never trips the session_events foreign key.
+func (s *Store) UpdateExternalID(ctx context.Context, agentName, hetuID, externalID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_events WHERE session_hetu IN (SELECT hetu_id FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?)`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET external_id=? WHERE hetu_id=?`, externalID, hetuID)
 	return err
 }
 

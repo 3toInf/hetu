@@ -148,27 +148,34 @@ func newDrivenManagerWithNotifier(t *testing.T) (*SessionManager, string, *notif
 // waitForApprovalPending waits until an approval pending event is seen for the given toolUseID
 func waitForApprovalPending(t *testing.T, m *SessionManager, hetuID, toolUseID string) {
 	t.Helper()
-	sub, err := m.Subscribe(hetuID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		go func() {
-			for range sub {
-			}
-		}()
-	}() // drain to avoid goroutine leak
-
-	deadline := time.After(2 * time.Second)
+	// Poll the pending map (not a subscriber): RequestApproval registers the
+	// pending BEFORE broadcasting, so map visibility is deterministic even if
+	// a subscriber attaches after the broadcast.
+	deadline := time.Now().Add(2 * time.Second)
 	for {
-		select {
-		case ev := <-sub:
-			if ev.Type == agent.EventApproval && ev.ApprovalState == "pending" && ev.ToolUseID == toolUseID {
+		for _, p := range m.PendingApprovals(hetuID) {
+			if p.ToolUseID == toolUseID {
 				return
 			}
-		case <-deadline:
-			t.Fatalf("timeout waiting for approval pending event for tool %s", toolUseID)
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending approval %s never registered", toolUseID)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitForTrue polls cond until true or the deadline — pump persistence
+// (markUnread / notify) happens AFTER broadcast, so observing the event on a
+// subscriber does not imply the store write has landed.
+func waitForTrue(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(msg)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -315,14 +322,11 @@ func TestPumpSetsUnreadAndNotifiesOnWaiting(t *testing.T) {
 		t.Fatal("timeout waiting for text event")
 	}
 
-	// Check that unread=1
-	se, ok, _ := mgr.store.GetSession(ctx, hid)
-	if !ok {
-		t.Fatal("session not found")
-	}
-	if !se.Unread {
-		t.Error("expected unread=1 after pump event")
-	}
+	// Check that unread=1 — poll: markUnread lands AFTER the broadcast.
+	waitForTrue(t, func() bool {
+		se, ok, _ := mgr.store.GetSession(ctx, hid)
+		return ok && se.Unread
+	}, "expected unread=1 after pump event")
 
 	// Now simulate a status transition to WaitingForApproval
 	fs.Emit(agent.Event{Type: agent.EventStatus, Status: session.StatusWaitingForApproval, Seq: 2})
@@ -337,10 +341,9 @@ func TestPumpSetsUnreadAndNotifiesOnWaiting(t *testing.T) {
 		t.Fatal("timeout waiting for status event")
 	}
 
-	// Give the pump a moment to process the status event and trigger notification
-	time.Sleep(100 * time.Millisecond)
-
-	// Check that a notification was sent (use thread-safe getter)
+	// Check that a notification was sent — poll: maybeNotify runs AFTER the
+	// broadcast (use the thread-safe getter).
+	waitForTrue(t, func() bool { return len(fake.GetSent()) > 0 }, "expected at least one notification")
 	sent := fake.GetSent()
 	if len(sent) == 0 {
 		t.Errorf("expected at least one notification, got none")

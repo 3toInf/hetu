@@ -131,3 +131,33 @@ func ids(s []Session) []string {
 	}
 	return out
 }
+
+func TestUpdateExternalIDKeepsEventsAndResolvesDupes(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "", Status: session.StatusRunning, Driven: true})
+	if err := st.AppendEvent(ctx, "h1", 1, "text", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	// meanwhile discovery created a row for the same claude session under its own id
+	_, _ = st.UpsertSession(ctx, Session{HetuID: "h2", Agent: "claude", ExternalID: "ext-9", Title: "discovered"})
+
+	if err := st.UpdateExternalID(ctx, "claude", "h1", "ext-9"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, _ := st.GetSession(ctx, "h1")
+	if !ok || got.ExternalID != "ext-9" {
+		t.Fatalf("external id not updated: %+v", got)
+	}
+	if _, ok, _ := st.GetSession(ctx, "h2"); ok {
+		t.Fatal("duplicate discovery row should be removed")
+	}
+	var n int
+	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM session_events WHERE session_hetu=?`, "h1").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("events lost during external id update: %d", n)
+	}
+}

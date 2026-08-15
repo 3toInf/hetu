@@ -345,3 +345,11 @@ func TestDenyCmd(t *testing.T) {
 		t.Fatalf("expected no pending approvals after deny, got: %v", pending)
 	}
 }
+
+
+func cancelAfter(t *testing.T, d time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	return ctx
+}

@@ -44,5 +44,5 @@ type SessionDTO struct {
 	LastViewedAt  int64  `json:"last_viewed_at,omitempty"`
 	UpdatedAt     int64  `json:"updated_at"`
 }
-type ProjectDTO struct{ ID int64 `json:"id"`; Name string `json:"name"`; Path string `json:"path"`; SessionCount int `json:"session_count"` }
+type ProjectDTO struct{ ID int64 `json:"id"`; Name string `json:"name"`; Path string `json:"path"`; SessionCount int `json:"session_count"`; AttentionCount int `json:"attention_count"` }
 type AgentDTO struct{ Name string `json:"name"`; Available bool `json:"available"`; Binary string `json:"binary"` }

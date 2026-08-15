@@ -9,6 +9,70 @@ import (
 	"github.com/3toInf/hetu/internal/api"
 )
 
+func TestPrintSessionsGroupsByAttention(t *testing.T) {
+	var buf bytes.Buffer
+
+	now := time.Now().Unix()
+	list := []api.SessionDTO{
+		{
+			HetuID:        "abcdefgh12345678",
+			Agent:         "claude",
+			Title:         "run",
+			Status:        "Running",
+			UpdatedAt:     now,
+			NeedsAttention: false,
+			Unread:        false,
+		},
+		{
+			HetuID:        "bbbbbbbb12345678",
+			Agent:         "claude",
+			Title:         "approve",
+			Status:        "WaitingForApproval",
+			UpdatedAt:     now,
+			NeedsAttention: true,
+			Unread:        false,
+		},
+		{
+			HetuID:        "cccccccc12345678",
+			Agent:         "claude",
+			Title:         "old",
+			Status:        "Completed",
+			UpdatedAt:     now - 3600,
+			NeedsAttention: false,
+			Unread:        true,
+		},
+	}
+
+	printSessions(&buf, list)
+	s := buf.String()
+
+	// Check that "approve" (Needs Attention) appears before "run" (Running)
+	idxA := indexOf(s, "approve")
+	idxB := indexOf(s, "run")
+	if idxA == -1 || idxB == -1 {
+		t.Fatalf("missing expected sessions in output")
+	}
+	if idxA >= idxB {
+		t.Error("approve (Needs Attention) must precede run (Running)")
+	}
+
+	// Check for unread marker
+	if !contains(s, "●") {
+		t.Error("missing unread marker ●")
+	}
+
+	// Check for group headers
+	if !contains(s, "Needs Attention") {
+		t.Error("missing 'Needs Attention' group header")
+	}
+	if !contains(s, "Running") {
+		t.Error("missing 'Running' group header")
+	}
+	if !contains(s, "Recent") {
+		t.Error("missing 'Recent' group header")
+	}
+}
+
 func TestPrintSessions(t *testing.T) {
 	var buf bytes.Buffer
 
@@ -84,6 +148,53 @@ func TestPrintSessions(t *testing.T) {
 	}
 	if contains(output, "12345678") && contains(output, "abcdefgh") && buf.String() == "12345678abcdefgh" {
 		// This should not happen - IDs should be truncated to 8 chars
+	}
+}
+
+func TestPrintProjectsWithAttentionBadge(t *testing.T) {
+	var buf bytes.Buffer
+
+	list := []api.ProjectDTO{
+		{
+			ID:            1,
+			Name:          "my-project",
+			Path:          "/home/user/my-project",
+			SessionCount:  5,
+			AttentionCount: 3,
+		},
+		{
+			ID:            2,
+			Name:          "another-project",
+			Path:          "/home/user/another-project",
+			SessionCount:  2,
+			AttentionCount: 0,
+		},
+	}
+
+	printProjects(&buf, list)
+	output := buf.String()
+
+	// Check that attention badge is shown for project with attention > 0
+	if !contains(output, "⚑3") {
+		t.Error("missing attention badge ⚑3 for project with 3 items needing attention")
+	}
+
+	// Check that no badge is shown for project with 0 attention
+	// The badge should only appear when AttentionCount > 0
+	lines := splitLines(output)
+	anotherIdx := -1
+	for i, line := range lines {
+		if contains(line, "another-project") {
+			anotherIdx = i
+			break
+		}
+	}
+	if anotherIdx == -1 {
+		t.Fatal("another-project not found in output")
+	}
+	// Check that the line doesn't contain ⚑ (badge only shown when count > 0)
+	if contains(lines[anotherIdx], "⚑") {
+		t.Error("attention badge should not be shown for project with 0 attention count")
 	}
 }
 
@@ -276,6 +387,25 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+func splitLines(s string) []string {
+	if len(s) == 0 {
+		return []string{}
+	}
+	lines := []string{}
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	// Add the last line if it doesn't end with newline
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }
 
 func TestApproveCmd(t *testing.T) {

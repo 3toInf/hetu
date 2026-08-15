@@ -99,7 +99,8 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 				replyErr(w, err)
 				return
 			}
-			out = append(out, api.ProjectDTO{ID: p.ID, Name: p.Name, Path: p.Path, SessionCount: len(sess)})
+				attentionCount, _ := s.st.CountAttention(ctx, p.ID)
+				out = append(out, api.ProjectDTO{ID: p.ID, Name: p.Name, Path: p.Path, SessionCount: len(sess), AttentionCount: attentionCount})
 		}
 		replyOK(w, out)
 	case "list_sessions":

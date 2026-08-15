@@ -177,13 +177,17 @@ func (m *SessionManager) Send(ctx context.Context, hetuID, prompt string) error 
 
 func (m *SessionManager) Subscribe(hetuID string) (<-chan agent.Event, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	l, ok := m.live[hetuID]
+	m.mu.Unlock()
 	if !ok {
 		return nil, errNotDriven
 	}
 	sub := make(chan agent.Event, 64)
+	// l.subscribers is read by broadcast under l.mu — the append must take
+	// the same lock (previously only m.mu was held: data race with pump).
+	l.mu.Lock()
 	l.subscribers = append(l.subscribers, sub)
+	l.mu.Unlock()
 	return sub, nil
 }
 

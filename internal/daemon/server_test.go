@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,5 +130,33 @@ func TestNeedsAttention(t *testing.T) {
 				t.Errorf("NeedsAttention=%v for status %s, expected %v", found.NeedsAttention, tc.status, tc.needsAttention)
 			}
 		})
+	}
+}
+
+func TestListSessionsUnknownProjectPath(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	st.UpsertProject(ctx, "Alpha", "/x/alpha")
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+	sock := tempPath(t) + ".sock"
+	go srv.Serve(ctx, sock)
+	t.Cleanup(func() { srv.Shutdown(ctx) })
+
+	c := dial(t, sock)
+	defer c.Close()
+	api.Encode(c, api.Request{Op: "list_sessions", Body: json.RawMessage(`{"project_path":"/typo/path"}`)})
+	br := bufio.NewReader(c)
+	line, _ := br.ReadBytes('\n')
+	var resp api.Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OK {
+		t.Fatalf("expected error for unknown project path, got OK (body: %s)", resp.Body)
+	}
+	if !strings.Contains(resp.Err, "unknown project path") {
+		t.Fatalf("error should name the problem, got: %s", resp.Err)
 	}
 }

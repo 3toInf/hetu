@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -482,4 +484,20 @@ func cancelAfter(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func TestExpandPath(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"/home/x/repo", "/home/x/repo"},
+		{"/home/x/repo/", "/home/x/repo"},
+		{"~/repo", filepath.Join(home, "repo")},
+		{"~", home},
+	}
+	for _, c := range cases {
+		if got := expandPath(c.in); got != c.want {
+			t.Errorf("expandPath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
 }

@@ -108,9 +108,14 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		_ = json.Unmarshal(req.Body, &b)
 		f := store.ListFilter{Status: b.Status, Agent: b.Agent}
 		if b.ProjectPath != "" {
-			if p, ok, _ := s.st.GetProjectByPath(ctx, b.ProjectPath); ok {
-				f.ProjectID = p.ID
+			p, ok, _ := s.st.GetProjectByPath(ctx, b.ProjectPath)
+			if !ok {
+				// An unmatched path must NOT silently drop the filter — that
+				// would return the whole registry for a typo'd -p.
+				replyErr(w, fmt.Errorf("unknown project path: %s (see `hetu projects`)", b.ProjectPath))
+				return
 			}
+			f.ProjectID = p.ID
 		}
 		sess, err := s.st.ListSessions(ctx, f)
 		if err != nil {

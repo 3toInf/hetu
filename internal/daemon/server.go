@@ -137,7 +137,23 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			replyErr(w, errors.New("not found"))
 			return
 		}
-		replyOK(w, toDTO(s.st, se))
+		// Fetch pending approvals for driven sessions
+		var pendingDTOs []api.PendingApprovalDTO
+		if se.Driven {
+			pending := s.mgr.PendingApprovals(se.HetuID)
+			pendingDTOs = make([]api.PendingApprovalDTO, 0, len(pending))
+			for _, p := range pending {
+				pendingDTOs = append(pendingDTOs, api.PendingApprovalDTO{
+					ToolUseID: p.ToolUseID,
+					ToolName:  p.ToolName,
+					ToolInput: p.ToolInput,
+				})
+			}
+		}
+		replyOK(w, map[string]any{
+			"session": toDTO(s.st, se),
+			"pending": pendingDTOs,
+		})
 	case "resume":
 		var b api.ResumeReq
 		_ = json.Unmarshal(req.Body, &b)

@@ -31,9 +31,9 @@ type ApprovalDecision struct {
 }
 
 type PendingApproval struct {
-	ToolUseID  string
-	ToolName   string
-	ToolInput  string
+	ToolUseID  string `json:"tool_use_id"`
+	ToolName   string `json:"tool_name"`
+	ToolInput  string `json:"tool_input"`
 }
 
 func (l *liveSession) broadcast(ev agent.Event) {
@@ -154,6 +154,35 @@ func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession
 		case agent.EventApproval:
 			_ = m.store.AppendEvent(ctx, hetuID, ev.Seq, "approval", ev.ToolName+":"+ev.ApprovalState)
 			m.markUnread(ctx, hetuID)
+		case agent.EventMeta:
+			// Persist the learned external_id. Meta events are bookkeeping, not user-visible.
+			if ev.ExternalID != "" {
+				// Fetch existing session row to preserve other fields.
+				existing, ok, err := m.store.GetSession(ctx, hetuID)
+				if err == nil && ok {
+					// Update external_id by deleting and re-inserting.
+					// The UpsertSession conflict clause on (agent, external_id) makes
+					// it hard to update external_id directly, so we delete and recreate.
+					_ = m.store.DeleteSession(ctx, hetuID)
+					_, _ = m.store.UpsertSession(ctx, store.Session{
+						HetuID:     existing.HetuID,
+						Agent:      existing.Agent,
+						ExternalID: ev.ExternalID,
+						ProjectID:  existing.ProjectID,
+						Host:       existing.Host,
+						CWD:        existing.CWD,
+						Title:      existing.Title,
+						Status:     existing.Status,
+						Driven:     existing.Driven,
+						Unread:     existing.Unread,
+						CreatedAt:  existing.CreatedAt,
+						UpdatedAt:  existing.UpdatedAt,
+						LastEventAt: existing.LastEventAt,
+						LastViewedAt: existing.LastViewedAt,
+					})
+				}
+			}
+			// Do not broadcast meta events to subscribers (internal bookkeeping).
 		default:
 			m.markUnread(ctx, hetuID)
 		}

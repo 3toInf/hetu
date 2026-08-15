@@ -214,6 +214,24 @@ func (c *Client) RequestPermission(ctx context.Context, sessionID, toolName, too
 	return res.Allow, res.Reason, nil
 }
 
+func (c *Client) GetSession(ctx context.Context, id string) (api.SessionDTO, []api.PendingApprovalDTO, error) {
+	r, err := c.call(ctx, "get_session", api.GetSessionReq{ID: id})
+	if err != nil {
+		return api.SessionDTO{}, nil, err
+	}
+	if !r.OK {
+		return api.SessionDTO{}, nil, errors.New(r.Err)
+	}
+	var res struct {
+		Session api.SessionDTO          `json:"session"`
+		Pending []api.PendingApprovalDTO `json:"pending"`
+	}
+	if err := json.Unmarshal(r.Body, &res); err != nil {
+		return api.SessionDTO{}, nil, err
+	}
+	return res.Session, res.Pending, nil
+}
+
 func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, error) {
 	conn, err := c.ensureConn(ctx)
 	if err != nil {

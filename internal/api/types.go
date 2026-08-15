@@ -46,3 +46,4 @@ type SessionDTO struct {
 }
 type ProjectDTO struct{ ID int64 `json:"id"`; Name string `json:"name"`; Path string `json:"path"`; SessionCount int `json:"session_count"`; AttentionCount int `json:"attention_count"` }
 type AgentDTO struct{ Name string `json:"name"`; Available bool `json:"available"`; Binary string `json:"binary"` }
+type PendingApprovalDTO struct{ ToolUseID string `json:"tool_use_id"`; ToolName string `json:"tool_name"`; ToolInput string `json:"tool_input"` }

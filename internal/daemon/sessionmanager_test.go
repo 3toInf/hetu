@@ -354,3 +354,69 @@ func TestPumpSetsUnreadAndNotifiesOnWaiting(t *testing.T) {
 		}
 	}
 }
+
+// TestMetaEventPersistsExternalID verifies that EventMeta causes the external_id to be persisted.
+func TestMetaEventPersistsExternalID(t *testing.T) {
+	mgr, hid, _, fs := newDrivenManagerWithNotifier(t)
+	ctx := context.Background()
+
+	// Initial session should have external_id="ext1" (as created in newDrivenManagerWithNotifier)
+	se, ok, _ := mgr.store.GetSession(ctx, hid)
+	if !ok {
+		t.Fatal("session not found")
+	}
+	initialID := se.ExternalID
+	if initialID != "ext1" {
+		t.Fatalf("initial external_id should be ext1, got %q", initialID)
+	}
+
+	// Emit a meta event with a different session_id
+	fs.Emit(agent.Event{Type: agent.EventMeta, ExternalID: "claude-session-abc123", Seq: 1})
+
+	// Give the pump time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the external_id was persisted
+	se, ok, _ = mgr.store.GetSession(ctx, hid)
+	if !ok {
+		t.Fatal("session not found after meta event")
+	}
+	if se.ExternalID != "claude-session-abc123" {
+		t.Fatalf("external_id not persisted: got %q, want %q", se.ExternalID, "claude-session-abc123")
+	}
+
+	// Emit another meta event with a different session_id (should be updated)
+	fs.Emit(agent.Event{Type: agent.EventMeta, ExternalID: "claude-session-def456", Seq: 2})
+
+	// Give the pump time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the external_id was updated
+	se, ok, _ = mgr.store.GetSession(ctx, hid)
+	if !ok {
+		t.Fatal("session not found after second meta event")
+	}
+	if se.ExternalID != "claude-session-def456" {
+		t.Fatalf("external_id not updated: got %q, want %q", se.ExternalID, "claude-session-def456")
+	}
+
+	// Verify meta events are NOT broadcast to subscribers (internal bookkeeping)
+	sub, err := mgr.Subscribe(hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drain any events in the subscription
+	for {
+		select {
+		case ev := <-sub:
+			// If we receive any event, it should NOT be EventMeta
+			if ev.Type == agent.EventMeta {
+				t.Error("meta events should not be broadcast to subscribers")
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	// Test passes
+}

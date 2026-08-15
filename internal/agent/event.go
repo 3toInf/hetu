@@ -10,6 +10,7 @@ const (
 	EventStatus   EventType = "status"
 	EventError    EventType = "error"
 	EventApproval EventType = "approval"
+	EventMeta     EventType = "meta"
 )
 
 func (e EventType) String() string { return string(e) }
@@ -24,5 +25,6 @@ type Event struct {
 	ApprovalState string           `json:"approval_state,omitempty"` // EventApproval
 	Status        session.Status   `json:"status,omitempty"`          // EventStatus
 	Err           string           `json:"err,omitempty"`            // EventError
+	ExternalID    string           `json:"external_id,omitempty"`    // EventMeta
 	Seq           int              `json:"seq"`
 }

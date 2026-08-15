@@ -247,6 +247,12 @@ func (s *Store) MarkUnread(ctx context.Context, hetuID string) error {
 	return err
 }
 
+// DeleteSession removes a session from the store by hetu_id.
+func (s *Store) DeleteSession(ctx context.Context, hetuID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE hetu_id=?`, hetuID)
+	return err
+}
+
 func (s *Store) CountAttention(ctx context.Context, projectID int64) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,

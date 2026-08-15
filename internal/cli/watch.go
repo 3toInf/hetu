@@ -76,6 +76,8 @@ func renderEvent(w io.Writer, ev agent.Event) {
 			fmt.Fprintf(w, "[approval allowed] %s\n", ev.ToolUseID)
 		} else if ev.ApprovalState == "denied" {
 			fmt.Fprintf(w, "[approval denied] %s\n", ev.ToolUseID)
+		} else if ev.ApprovalState == "timeout" {
+			fmt.Fprintf(w, "[approval timeout] %s\n", ev.ToolUseID)
 		}
 	case agent.EventError:
 		fmt.Fprintf(w, "error: %s\n", ev.Err)

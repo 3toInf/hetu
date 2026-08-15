@@ -165,3 +165,49 @@ func TestWatchInlineApprove(t *testing.T) {
 		t.Fatalf("expected output to contain 'approve', got: %s", s)
 	}
 }
+
+func TestRenderEventApprovalStates(t *testing.T) {
+	tests := []struct {
+		name          string
+		approvalState string
+		wantContains  string
+	}{
+		{
+			name:          "pending",
+			approvalState: "pending",
+			wantContains:  "[approval pending]",
+		},
+		{
+			name:          "allowed",
+			approvalState: "allowed",
+			wantContains:  "[approval allowed]",
+		},
+		{
+			name:          "denied",
+			approvalState: "denied",
+			wantContains:  "[approval denied]",
+		},
+		{
+			name:          "timeout",
+			approvalState: "timeout",
+			wantContains:  "[approval timeout]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			ev := agent.Event{
+				Type:          agent.EventApproval,
+				ApprovalState: tt.approvalState,
+				ToolUseID:     "tu1",
+				ToolName:      "Bash",
+			}
+			renderEvent(&buf, ev)
+			got := buf.String()
+			if !strings.Contains(got, tt.wantContains) {
+				t.Errorf("renderEvent() output = %q, want to contain %q", got, tt.wantContains)
+			}
+		})
+	}
+}

@@ -20,9 +20,13 @@ type execProcess struct {
 	stdout io.Reader
 }
 
-func newExecProcess(bin string, args []string, cwd string) (*execProcess, error) {
+func newExecProcess(bin string, args []string, cwd string, env []string) (*execProcess, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
+	// Set environment variables if provided
+	if len(env) > 0 {
+		cmd.Env = env
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

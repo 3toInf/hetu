@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/api"
 )
 
@@ -174,6 +175,114 @@ func (c *Client) Discover(ctx context.Context) error {
 		return errors.New(r.Err)
 	}
 	return nil
+}
+
+func (c *Client) Approve(ctx context.Context, id, toolUseID string, allow bool, reason string) error {
+	r, err := c.call(ctx, "approve", api.ApproveReq{ID: id, ToolUseID: toolUseID, Allow: allow, Reason: reason})
+	if err != nil {
+		return err
+	}
+	if !r.OK {
+		return errors.New(r.Err)
+	}
+	return nil
+}
+
+func (c *Client) MarkRead(ctx context.Context, id string) error {
+	r, err := c.call(ctx, "mark_read", api.MarkReadReq{ID: id})
+	if err != nil {
+		return err
+	}
+	if !r.OK {
+		return errors.New(r.Err)
+	}
+	return nil
+}
+
+func (c *Client) RequestPermission(ctx context.Context, sessionID, toolName, toolInput, toolUseID string) (bool, string, error) {
+	r, err := c.call(ctx, "permission_request", api.PermissionRequestReq{SessionID: sessionID, ToolName: toolName, ToolInput: toolInput, ToolUseID: toolUseID})
+	if err != nil {
+		return false, "", err
+	}
+	if !r.OK {
+		return false, "", errors.New(r.Err)
+	}
+	var res api.PermissionRequestResp
+	if err := json.Unmarshal(r.Body, &res); err != nil {
+		return false, "", err
+	}
+	return res.Allow, res.Reason, nil
+}
+
+func (c *Client) GetSession(ctx context.Context, id string) (api.SessionDTO, []api.PendingApprovalDTO, error) {
+	r, err := c.call(ctx, "get_session", api.GetSessionReq{ID: id})
+	if err != nil {
+		return api.SessionDTO{}, nil, err
+	}
+	if !r.OK {
+		return api.SessionDTO{}, nil, errors.New(r.Err)
+	}
+	var res struct {
+		Session api.SessionDTO          `json:"session"`
+		Pending []api.PendingApprovalDTO `json:"pending"`
+	}
+	if err := json.Unmarshal(r.Body, &res); err != nil {
+		return api.SessionDTO{}, nil, err
+	}
+	return res.Session, res.Pending, nil
+}
+
+func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, error) {
+	conn, err := c.ensureConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(api.WatchReq{ID: id})
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	if err := api.Encode(conn, api.Request{Op: "watch", Body: body}); err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	out := make(chan agent.Event, 64)
+	go func() {
+		defer conn.Close()
+		defer close(out)
+		dec := json.NewDecoder(conn)
+		for {
+			var resp api.Response
+			if err := dec.Decode(&resp); err != nil {
+				// EOF or decode error
+				return
+			}
+			if !resp.OK {
+				return
+			}
+			var ev agent.Event
+			if err := json.Unmarshal(resp.Body, &ev); err == nil {
+				select {
+				case out <- ev:
+				default: // buffer full: drop (consumer too slow; matches broadcast semantics)
+				}
+			} else {
+				// failed to unmarshal event body
+				return
+			}
+		}
+	}()
+
+	// Close connection when context is cancelled to avoid goroutine leak
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
+	return out, nil
 }
 
 // startDaemon spawns hetud detached (best-effort).

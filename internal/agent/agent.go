@@ -57,5 +57,6 @@ type Session interface {
 	Send(ctx context.Context, prompt string) error
 	Events() <-chan Event
 	Status() session.Status
+	SetStatus(status session.Status) error
 	Close() error
 }

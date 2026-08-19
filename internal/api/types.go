@@ -24,17 +24,26 @@ type CreateReq struct{ ProjectPath string `json:"project_path"`; Prompt string `
 type SearchReq struct{ Q string `json:"q"` }
 type DiscoverReq struct{}
 type SubscribeReq struct{ ID string `json:"id"` }
+type WatchReq struct{ ID string `json:"id"` }
+type ApproveReq struct{ ID string `json:"id"`; ToolUseID string `json:"tool_use_id,omitempty"`; Allow bool `json:"allow"`; Reason string `json:"reason,omitempty"` }
+type MarkReadReq struct{ ID string `json:"id"` }
+type PermissionRequestReq struct{ SessionID, ToolName, ToolInput, ToolUseID string }
+type PermissionRequestResp struct{ Allow bool; Reason string }
 
 type SessionDTO struct {
-	HetuID     string `json:"hetu_id"`
-	Agent      string `json:"agent"`
-	ExternalID string `json:"external_id"`
-	ProjectPath string `json:"project_path"`
-	CWD        string `json:"cwd"`
-	Title      string `json:"title"`
-	Status     string `json:"status"`
-	Driven     bool   `json:"driven"`
-	UpdatedAt  int64  `json:"updated_at"`
+	HetuID        string `json:"hetu_id"`
+	Agent         string `json:"agent"`
+	ExternalID    string `json:"external_id"`
+	ProjectPath   string `json:"project_path"`
+	CWD           string `json:"cwd"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	Driven        bool   `json:"driven"`
+	Unread        bool   `json:"unread"`
+	NeedsAttention bool  `json:"needs_attention"`
+	LastViewedAt  int64  `json:"last_viewed_at,omitempty"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
-type ProjectDTO struct{ ID int64 `json:"id"`; Name string `json:"name"`; Path string `json:"path"`; SessionCount int `json:"session_count"` }
+type ProjectDTO struct{ ID int64 `json:"id"`; Name string `json:"name"`; Path string `json:"path"`; SessionCount int `json:"session_count"`; AttentionCount int `json:"attention_count"` }
 type AgentDTO struct{ Name string `json:"name"`; Available bool `json:"available"`; Binary string `json:"binary"` }
+type PendingApprovalDTO struct{ ToolUseID string `json:"tool_use_id"`; ToolName string `json:"tool_name"`; ToolInput string `json:"tool_input"` }

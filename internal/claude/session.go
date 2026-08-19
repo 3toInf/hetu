@@ -75,13 +75,24 @@ func (s *claudeSession) readLoop() {
 	sc := bufio.NewScanner(s.proc.Stdout())
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		ev, ok := ParseStreamLine(sc.Bytes())
+		ps, ok := ParseStreamLine(sc.Bytes())
 		if !ok {
 			continue
 		}
+		ev := ps.Event
 		if ev.Type == agent.EventStatus {
 			s.status.Store(ev.Status)
 		}
+
+		// If we learned a session_id and it differs from our current externalID,
+		// update it and emit a meta event so the daemon can persist it.
+		if ps.SessionID != "" && ps.SessionID != s.externalID {
+			s.mu.Lock()
+			s.externalID = ps.SessionID
+			s.mu.Unlock()
+			s.push(agent.Event{Type: agent.EventMeta, ExternalID: ps.SessionID})
+		}
+
 		s.push(ev)
 	}
 	// process ended
@@ -103,6 +114,11 @@ func (s *claudeSession) Status() session.Status {
 		return v
 	}
 	return session.StatusUnknown
+}
+
+func (s *claudeSession) SetStatus(st session.Status) error {
+	s.status.Store(st)
+	return nil
 }
 
 func (s *claudeSession) Send(ctx context.Context, prompt string) error {

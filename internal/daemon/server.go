@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/3toInf/hetu/internal/api"
+	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
 )
 
@@ -96,7 +99,8 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 				replyErr(w, err)
 				return
 			}
-			out = append(out, api.ProjectDTO{ID: p.ID, Name: p.Name, Path: p.Path, SessionCount: len(sess)})
+				attentionCount, _ := s.st.CountAttention(ctx, p.ID)
+				out = append(out, api.ProjectDTO{ID: p.ID, Name: p.Name, Path: p.Path, SessionCount: len(sess), AttentionCount: attentionCount})
 		}
 		replyOK(w, out)
 	case "list_sessions":
@@ -104,9 +108,14 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		_ = json.Unmarshal(req.Body, &b)
 		f := store.ListFilter{Status: b.Status, Agent: b.Agent}
 		if b.ProjectPath != "" {
-			if p, ok, _ := s.st.GetProjectByPath(ctx, b.ProjectPath); ok {
-				f.ProjectID = p.ID
+			p, ok, _ := s.st.GetProjectByPath(ctx, b.ProjectPath)
+			if !ok {
+				// An unmatched path must NOT silently drop the filter — that
+				// would return the whole registry for a typo'd -p.
+				replyErr(w, fmt.Errorf("unknown project path: %s (see `hetu projects`)", b.ProjectPath))
+				return
 			}
+			f.ProjectID = p.ID
 		}
 		sess, err := s.st.ListSessions(ctx, f)
 		if err != nil {
@@ -133,7 +142,23 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			replyErr(w, errors.New("not found"))
 			return
 		}
-		replyOK(w, toDTO(s.st, se))
+		// Fetch pending approvals for driven sessions
+		var pendingDTOs []api.PendingApprovalDTO
+		if se.Driven {
+			pending := s.mgr.PendingApprovals(se.HetuID)
+			pendingDTOs = make([]api.PendingApprovalDTO, 0, len(pending))
+			for _, p := range pending {
+				pendingDTOs = append(pendingDTOs, api.PendingApprovalDTO{
+					ToolUseID: p.ToolUseID,
+					ToolName:  p.ToolName,
+					ToolInput: p.ToolInput,
+				})
+			}
+		}
+		replyOK(w, map[string]any{
+			"session": toDTO(s.st, se),
+			"pending": pendingDTOs,
+		})
 	case "resume":
 		var b api.ResumeReq
 		_ = json.Unmarshal(req.Body, &b)
@@ -209,7 +234,7 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			_ = s.dsc.Run(ctx)
 		}
 		replyOK(w, map[string]any{"ok": true})
-	case "subscribe":
+	case "subscribe", "watch":
 		var b api.SubscribeReq
 		_ = json.Unmarshal(req.Body, &b)
 		se, ok, err := s.st.ResolveSession(ctx, b.ID)
@@ -226,10 +251,72 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			replyErr(w, err)
 			return
 		}
-		enc := json.NewEncoder(w)
 		for ev := range sub {
-			_ = enc.Encode(map[string]any{"ok": true, "body": ev})
+			body, err := json.Marshal(ev)
+			if err != nil {
+				break
+			}
+			if err := api.Encode(w, api.Response{OK: true, Body: body}); err != nil {
+				break
+			}
 		}
+	case "approve":
+		var b api.ApproveReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil || !ok {
+			replyErr(w, errOrNotFound(err, ok))
+			return
+		}
+		pending := s.mgr.PendingApprovals(se.HetuID)
+		toolID := b.ToolUseID
+		if toolID == "" {
+			if len(pending) == 0 {
+				replyErr(w, errors.New("no pending approval"))
+				return
+			}
+			if len(pending) > 1 {
+				replyErr(w, fmt.Errorf("multiple pending; specify --tool: %v", toolIDs(pending)))
+				return
+			}
+			toolID = pending[0].ToolUseID
+		}
+		found := s.mgr.ResolveApproval(se.HetuID, toolID, ApprovalDecision{Allow: b.Allow, Reason: b.Reason})
+		if !found {
+			replyErr(w, errors.New("no matching pending approval"))
+			return
+		}
+		replyOK(w, map[string]any{"ok": true})
+	case "mark_read":
+		var b api.MarkReadReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, err := s.st.ResolveSession(ctx, b.ID)
+		if err != nil || !ok {
+			replyErr(w, errOrNotFound(err, ok))
+			return
+		}
+		if err := s.st.MarkRead(ctx, se.HetuID); err != nil {
+			replyErr(w, err)
+			return
+		}
+		replyOK(w, map[string]any{"ok": true})
+	case "permission_request":
+		var b api.PermissionRequestReq
+		_ = json.Unmarshal(req.Body, &b)
+		se, ok, _ := s.st.GetSessionByExternal(ctx, "claude", b.SessionID)
+		if !ok {
+			replyErr(w, errors.New("session not driven"))
+			return
+		}
+		// Use a ctx capped below the hook's 540s so we return before claude times out.
+		rctx, cancel := context.WithTimeout(ctx, 535*time.Second)
+		defer cancel()
+		d, err := s.mgr.RequestPermission(rctx, se.HetuID, b.ToolUseID, b.ToolName, b.ToolInput)
+		allow := d.Allow
+		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			allow = false
+		}
+		replyOK(w, api.PermissionRequestResp{Allow: allow, Reason: d.Reason})
 	default:
 		replyErr(w, errors.New("unknown op: "+req.Op))
 	}
@@ -244,6 +331,24 @@ func replyErr(w io.Writer, err error) {
 	api.Encode(w, api.Response{OK: false, Err: err.Error()})
 }
 
+func errOrNotFound(err error, ok bool) error {
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not found")
+	}
+	return nil
+}
+
+func toolIDs(pending []PendingApproval) []string {
+	ids := make([]string, len(pending))
+	for i, p := range pending {
+		ids[i] = p.ToolUseID
+	}
+	return ids
+}
+
 func toDTO(st *store.Store, se store.Session) api.SessionDTO {
 	var path string
 	if se.ProjectID != 0 {
@@ -251,15 +356,29 @@ func toDTO(st *store.Store, se store.Session) api.SessionDTO {
 			path = p
 		}
 	}
+
+	// Determine NeedsAttention: sessions that need user attention
+	needsAttention := se.Status == session.StatusWaitingForApproval ||
+		se.Status == session.StatusWaitingForInput ||
+		se.Status == session.StatusError
+
+	var lastViewed int64
+	if se.LastViewedAt != nil {
+		lastViewed = se.LastViewedAt.Unix()
+	}
+
 	return api.SessionDTO{
-		HetuID:     se.HetuID,
-		Agent:      se.Agent,
-		ExternalID: se.ExternalID,
-		ProjectPath: path,
-		CWD:        se.CWD,
-		Title:      se.Title,
-		Status:     string(se.Status),
-		Driven:     se.Driven,
-		UpdatedAt:  se.UpdatedAt.Unix(),
+		HetuID:         se.HetuID,
+		Agent:          se.Agent,
+		ExternalID:     se.ExternalID,
+		ProjectPath:    path,
+		CWD:            se.CWD,
+		Title:          se.Title,
+		Status:         string(se.Status),
+		Driven:         se.Driven,
+		Unread:         se.Unread,
+		NeedsAttention: needsAttention,
+		LastViewedAt:   lastViewed,
+		UpdatedAt:      se.UpdatedAt.Unix(),
 	}
 }

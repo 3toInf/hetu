@@ -15,19 +15,20 @@ import (
 var ErrAmbiguousID = errors.New("ambiguous session id; use more characters")
 
 type Session struct {
-	HetuID      string
-	Agent       string
-	ExternalID  string
-	ProjectID   int64
-	Host        string
-	CWD         string
-	Title       string
-	Status      session.Status
-	Driven      bool
-	Unread      bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	LastEventAt *time.Time
+	HetuID       string
+	Agent        string
+	ExternalID   string
+	ProjectID    int64
+	Host         string
+	CWD          string
+	Title        string
+	Status       session.Status
+	Driven       bool
+	Unread       bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	LastEventAt  *time.Time
+	LastViewedAt *time.Time
 }
 
 type ListFilter struct {
@@ -61,16 +62,20 @@ func (s *Store) UpsertSession(ctx context.Context, in Session) (Session, error) 
 	if in.LastEventAt != nil {
 		lastEv = in.LastEventAt.Unix()
 	}
+	var lastView any
+	if in.LastViewedAt != nil {
+		lastView = in.LastViewedAt.Unix()
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions(hetu_id, agent, external_id, project_id, host, cwd, title, status, driven, unread, created_at, updated_at, last_event_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO sessions(hetu_id, agent, external_id, project_id, host, cwd, title, status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(agent, external_id) DO UPDATE SET
 			hetu_id=excluded.hetu_id,
 			project_id=COALESCE(excluded.project_id, sessions.project_id),
 			host=excluded.host, cwd=excluded.cwd, title=excluded.title,
 			status=excluded.status, driven=excluded.driven, updated_at=excluded.updated_at,
 			last_event_at=COALESCE(excluded.last_event_at, sessions.last_event_at)`,
-		in.HetuID, in.Agent, in.ExternalID, projID, in.Host, in.CWD, in.Title, in.Status, driven, unread, in.CreatedAt.Unix(), in.UpdatedAt.Unix(), lastEv)
+		in.HetuID, in.Agent, in.ExternalID, projID, in.Host, in.CWD, in.Title, in.Status, driven, unread, in.CreatedAt.Unix(), in.UpdatedAt.Unix(), lastEv, lastView)
 	if err != nil {
 		return Session{}, err
 	}
@@ -154,14 +159,15 @@ func likePrefix(p string) string {
 	return r.Replace(p) + `%`
 }
 
-const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at`
+const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at`
 
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var s Session
 	var driven, unread int
 	var ct, ut int64
 	var lastEv *int64
-	if err := row.Scan(&s.HetuID, &s.Agent, &s.ExternalID, &s.ProjectID, &s.Host, &s.CWD, &s.Title, &s.Status, &driven, &unread, &ct, &ut, &lastEv); err != nil {
+	var lastView *int64
+	if err := row.Scan(&s.HetuID, &s.Agent, &s.ExternalID, &s.ProjectID, &s.Host, &s.CWD, &s.Title, &s.Status, &driven, &unread, &ct, &ut, &lastEv, &lastView); err != nil {
 		return Session{}, err
 	}
 	s.Driven = driven == 1
@@ -171,6 +177,10 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	if lastEv != nil {
 		t := time.Unix(*lastEv, 0)
 		s.LastEventAt = &t
+	}
+	if lastView != nil {
+		t := time.Unix(*lastView, 0)
+		s.LastViewedAt = &t
 	}
 	return s, nil
 }
@@ -191,7 +201,8 @@ func (s *Store) ListSessions(ctx context.Context, f ListFilter) ([]Session, erro
 		args = append(args, f.Agent)
 	}
 	q += ` ORDER BY CASE status
-		WHEN 'Error' THEN 0 WHEN 'Running' THEN 1 WHEN 'Completed' THEN 2 WHEN 'Idle' THEN 3 ELSE 4 END,
+		WHEN 'WaitingForApproval' THEN 0 WHEN 'WaitingForInput' THEN 0
+		WHEN 'Error' THEN 1 WHEN 'Running' THEN 2 WHEN 'Completed' THEN 3 WHEN 'Idle' THEN 4 ELSE 5 END,
 		updated_at DESC`
 	if f.Limit > 0 {
 		q += ` LIMIT ?`
@@ -222,4 +233,44 @@ func (s *Store) UpdateSessionStatus(ctx context.Context, hetuID string, st sessi
 		`UPDATE sessions SET status=?, driven=?, updated_at=strftime('%s','now'), last_event_at=strftime('%s','now') WHERE hetu_id=?`,
 		st, d, hetuID)
 	return err
+}
+
+func (s *Store) MarkRead(ctx context.Context, hetuID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET unread=0, last_viewed_at=strftime('%s','now') WHERE hetu_id=?`, hetuID)
+	return err
+}
+
+func (s *Store) MarkUnread(ctx context.Context, hetuID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET unread=1, last_event_at=strftime('%s','now') WHERE hetu_id=?`, hetuID)
+	return err
+}
+
+// UpdateExternalID records a learned external id on an existing session row
+// (claude mints its session id only after start). A row that discovery
+// created meanwhile for the same (agent, external_id) is removed so the
+// driven session's hetu_id stays the single identity. Unlike delete+reinsert
+// this never trips the session_events foreign key.
+func (s *Store) UpdateExternalID(ctx context.Context, agentName, hetuID, externalID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_events WHERE session_hetu IN (SELECT hetu_id FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?)`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET external_id=? WHERE hetu_id=?`, externalID, hetuID)
+	return err
+}
+
+func (s *Store) CountAttention(ctx context.Context, projectID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sessions WHERE project_id=? AND (status IN ('WaitingForApproval','WaitingForInput','Error') OR unread=1)`,
+		projectID).Scan(&n)
+	return n, err
 }

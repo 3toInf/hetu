@@ -8,37 +8,57 @@ import (
 )
 
 type rawStream struct {
-	Type     string                 `json:"type"`
-	Subtype  string                 `json:"subtype"`
-	Message  map[string]interface{} `json:"message"`
+	Type      string                 `json:"type"`
+	Subtype   string                 `json:"subtype"`
+	Message   map[string]interface{} `json:"message"`
+	SessionID string                 `json:"session_id,omitempty"`
+}
+
+// ParsedStream is the result of ParseStreamLine, potentially including a session_id.
+type ParsedStream struct {
+	Event     agent.Event
+	SessionID string
 }
 
 // ParseStreamLine converts one stream-json line into an Event.
 // Returns ok=false for lines we don't model (they are ignored by the driver).
-func ParseStreamLine(b []byte) (agent.Event, bool) {
+// When a system/init or result message carries a session_id, it's returned in SessionID.
+func ParseStreamLine(b []byte) (ParsedStream, bool) {
 	var r rawStream
 	if err := json.Unmarshal(b, &r); err != nil {
-		return agent.Event{}, false
+		return ParsedStream{}, false
 	}
+	var ev agent.Event
+	var sessionID string
 	switch r.Type {
 	case "assistant":
-		return assistantEvent(r.Message), true
+		ev = assistantEvent(r.Message)
+		return ParsedStream{Event: ev}, true
 	case "user":
 		if hasToolResult(r.Message) {
-			return agent.Event{Type: agent.EventTool}, true
+			return ParsedStream{Event: agent.Event{Type: agent.EventTool}}, true
 		}
-		return agent.Event{}, false
+		return ParsedStream{}, false
 	case "result":
 		st := session.StatusCompleted
 		if r.Subtype == "error" || r.Subtype == "error_during_execution" {
 			st = session.StatusError
 		}
-		return agent.Event{Type: agent.EventStatus, Status: st}, true
-	case "system", "stream_event":
+		ev = agent.Event{Type: agent.EventStatus, Status: st}
+		sessionID = r.SessionID // result messages can carry session_id
+		return ParsedStream{Event: ev, SessionID: sessionID}, true
+	case "system":
+		if r.Subtype == "init" {
+			sessionID = r.SessionID // system/init messages carry session_id
+			return ParsedStream{Event: agent.Event{Type: agent.EventStatus, Status: session.StatusRunning}, SessionID: sessionID}, true
+		}
+		// other system messages: ignored
+		return ParsedStream{}, false
+	case "stream_event":
 		// progress/heartbeat: ignored
-		return agent.Event{}, false
+		return ParsedStream{}, false
 	}
-	return agent.Event{}, false
+	return ParsedStream{}, false
 }
 
 func assistantEvent(msg map[string]interface{}) agent.Event {

@@ -22,17 +22,25 @@ func newSessionCmd() *cobra.Command {
 
 func sessionRun(cmd *cobra.Command, id string) error {
 	cl := newClient()
-	list, err := cl.ListSessions(cmd.Context(), "", "", "")
+	s, pending, err := cl.GetSession(cmd.Context(), id)
 	if err != nil {
 		return err
 	}
-	for _, s := range list {
-		if s.HetuID == id {
-			printSessionDetails(os.Stdout, s)
-			return nil
+	printSessionDetails(os.Stdout, s)
+
+	// Mark the session as read (best-effort)
+	_ = cl.MarkRead(cmd.Context(), s.HetuID)
+
+	// Show pending approvals if any
+	if len(pending) > 0 {
+		fmt.Fprintf(os.Stdout, "\nPending Approvals:\n")
+		for _, p := range pending {
+			fmt.Fprintf(os.Stdout, "  %s  %s  %s\n", p.ToolUseID, p.ToolName, p.ToolInput)
 		}
+		fmt.Fprintf(os.Stdout, "→ hetu approve|deny %s --tool <tool_use_id>\n", s.HetuID)
 	}
-	return fmt.Errorf("session not found: %s", id)
+
+	return nil
 }
 
 func printSessionDetails(w io.Writer, s api.SessionDTO) {

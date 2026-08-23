@@ -53,3 +53,11 @@ type MessageDTO struct {
 	Seq     int    `json:"seq"`
 	TS      int64  `json:"ts"`
 }
+type SearchResultDTO struct {
+	HetuID      string `json:"hetu_id"`
+	Agent       string `json:"agent"`
+	Title       string `json:"title"`
+	ProjectPath string `json:"project_path"`
+	Hits        int    `json:"hits"`
+	Snippet     string `json:"snippet"`
+}

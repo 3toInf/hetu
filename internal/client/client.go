@@ -136,7 +136,7 @@ func (c *Client) Create(ctx context.Context, projectPath, prompt string) (string
 	return res.ID, nil
 }
 
-func (c *Client) Search(ctx context.Context, q string) ([]api.SessionDTO, error) {
+func (c *Client) Search(ctx context.Context, q string) ([]api.SearchResultDTO, error) {
 	r, err := c.call(ctx, "search", api.SearchReq{Q: q})
 	if err != nil {
 		return nil, err
@@ -144,7 +144,7 @@ func (c *Client) Search(ctx context.Context, q string) ([]api.SessionDTO, error)
 	if !r.OK {
 		return nil, errors.New(r.Err)
 	}
-	var out []api.SessionDTO
+	var out []api.SearchResultDTO
 	if err := json.Unmarshal(r.Body, &out); err != nil {
 		return nil, err
 	}

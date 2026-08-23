@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,40 @@ func dial(t *testing.T, sock string) net.Conn {
 	}
 	t.Fatalf("dial: %v", err)
 	return nil
+}
+
+// TestShutdownConcurrent guards against double-closing s.done: the ctx-watcher
+// goroutine in Serve and main.go's post-select Shutdown can both call Shutdown
+// at once. The select{case <-s.done: default: close(s.done)} guard is not
+// atomic across callers, so concurrent Shutdown used to panic. Run it in a loop
+// so the race detector has ample opportunity to catch the old code.
+func TestShutdownConcurrent(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		srv := NewServer(nil, nil, nil)
+		const goroutines = 8
+		start := make(chan struct{})
+		panics := make(chan any, goroutines)
+		var wg sync.WaitGroup
+		for j := 0; j < goroutines; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						panics <- r
+					}
+				}()
+				<-start
+				srv.Shutdown(context.Background())
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(panics)
+		for r := range panics {
+			t.Fatalf("iteration %d: Shutdown panicked: %v", i, r)
+		}
+	}
 }
 
 func TestServerListProjects(t *testing.T) {

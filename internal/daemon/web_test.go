@@ -357,6 +357,36 @@ func TestWebCreateSession(t *testing.T) {
 	}
 }
 
+// TestWebCreateOutlivesRequest: create/resume hand their ctx to the session
+// pump goroutine, which must keep writing to the store long after the HTTP
+// request that spawned it has completed. With r.Context() the pump's store
+// writes all fail "context canceled" once the response is written — observed
+// in the real-claude smoke as a session stuck "Running" forever.
+func TestWebCreateOutlivesRequest(t *testing.T) {
+	ts, m, fs := newWebTestServer(t)
+	ctx := context.Background()
+
+	resp := postJSON(t, ts.URL+"/api/sessions", "application/json", `{"project_path":"/x"}`)
+	b := bodyString(t, resp) // bodyString closes the body → request ctx canceled
+	var created struct{ ID string `json:"id"` }
+	if err := json.Unmarshal([]byte(b), &created); err != nil || created.ID == "" {
+		t.Fatalf("create response: %q (%v)", b, err)
+	}
+
+	// After the request is DONE, the pump must still persist status updates.
+	fs.Emit(agent.Event{Type: agent.EventStatus, Status: session.StatusWaitingForInput})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		se, ok, _ := m.store.GetSession(ctx, created.ID)
+		if ok && se.Status == session.StatusWaitingForInput {
+			return // pump wrote to the store after request completion — pass
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	se, _, _ := m.store.GetSession(ctx, created.ID)
+	t.Fatalf("pump store write did not survive request completion; status=%q (want WaitingForInput)", se.Status)
+}
+
 // readSSELine reads one line from an SSE response body (blocking).
 func readSSELine(t *testing.T, br *bufio.Reader) string {
 	t.Helper()

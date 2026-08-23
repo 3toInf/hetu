@@ -220,7 +220,10 @@ func (ws *WebServer) Handler() http.Handler {
 		ws.call(r.Context(), w, "send", api.SendReq{ID: r.PathValue("id"), Prompt: b.Prompt})
 	})
 	mux.HandleFunc("POST /api/sessions/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
-		ws.call(r.Context(), w, "resume", api.ResumeReq{ID: r.PathValue("id")})
+		// resume hands the ctx to a pump goroutine that must outlive the HTTP request;
+		// a request-scoped ctx is canceled when the response completes and would kill
+		// every subsequent store write (observed as "pump update status ... context canceled").
+		ws.call(context.Background(), w, "resume", api.ResumeReq{ID: r.PathValue("id")})
 	})
 	mux.HandleFunc("POST /api/sessions/{id}/mark_read", func(w http.ResponseWriter, r *http.Request) {
 		ws.call(r.Context(), w, "mark_read", api.MarkReadReq{ID: r.PathValue("id")})
@@ -232,7 +235,10 @@ func (ws *WebServer) Handler() http.Handler {
 		if !decodeBody(w, r, &b) {
 			return
 		}
-		ws.call(r.Context(), w, "create", api.CreateReq{ProjectPath: b.ProjectPath})
+		// create hands the ctx to a pump goroutine that must outlive the HTTP request;
+		// a request-scoped ctx is canceled when the response completes and would kill
+		// every subsequent store write (observed as "pump update status ... context canceled").
+		ws.call(context.Background(), w, "create", api.CreateReq{ProjectPath: b.ProjectPath})
 	})
 	mux.Handle("/", ws.staticHandler())
 	// Wrap the mux with a Host check: a malicious page can re-bind its domain to

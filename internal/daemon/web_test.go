@@ -3,6 +3,8 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/agent/fake"
+	"github.com/3toInf/hetu/internal/api"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -488,5 +491,59 @@ func TestWebSSENotDriven(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp2.StatusCode)
+	}
+}
+
+// TestWebLimitPassthrough: ?limit= caps messages and session rows; the
+// get_session default (no limit) rises from the old hard 20 to 200.
+func TestWebLimitPassthrough(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	st.UpsertProject(ctx, "Alpha", "/x")
+	msgs := make([]store.Message, 25)
+	for i := range msgs {
+		msgs[i] = store.Message{Seq: i, Role: "user", Content: fmt.Sprintf("m%d", i)}
+	}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("s%d", i)
+		st.UpsertSession(ctx, store.Session{HetuID: id, Agent: "claude", ExternalID: fmt.Sprintf("e%d", i), CWD: "/x", Status: session.StatusCompleted})
+		_ = st.SyncMessages(ctx, id, msgs)
+	}
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	defer ts.Close()
+
+	var det struct {
+		Messages []api.MessageDTO `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(getJSON(t, ts.URL+"/api/sessions/s0?limit=5")), &det); err != nil {
+		t.Fatal(err)
+	}
+	if len(det.Messages) != 5 {
+		t.Fatalf("?limit=5: got %d messages, want 5", len(det.Messages))
+	}
+
+	// no limit: all 25 come back (default cap is 200)
+	if err := json.Unmarshal([]byte(getJSON(t, ts.URL+"/api/sessions/s0")), &det); err != nil {
+		t.Fatal(err)
+	}
+	if len(det.Messages) != 25 {
+		t.Fatalf("no limit: got %d messages, want 25", len(det.Messages))
+	}
+
+	var list []api.SessionDTO
+	if err := json.Unmarshal([]byte(getJSON(t, ts.URL+"/api/sessions?limit=2")), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("sessions?limit=2: got %d rows, want 2", len(list))
+	}
+
+	// garbage limit is ignored, not a 500
+	if err := json.Unmarshal([]byte(getJSON(t, ts.URL+"/api/sessions/s0?limit=abc")), &det); err != nil {
+		t.Fatal(err)
 	}
 }

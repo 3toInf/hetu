@@ -76,3 +76,52 @@ func TestParseRejectsKindOther(t *testing.T) {
 		t.Error(`Parse("!Other(x)") should error`)
 	}
 }
+
+func TestMatchShellPrefix(t *testing.T) {
+	p, _ := NewPolicy(Rules{Allow: []string{"Shell(git status:*)", "Shell(npm test)"}})
+	cases := []struct{ subj string; want Decision }{
+		{"git status", DecisionAllow},
+		{"git status --short", DecisionAllow},
+		{"git  status", DecisionAsk},       // prefix is byte-wise, no whitespace folding beyond TrimSpace of the subject
+		{"npm test", DecisionAllow},        // exact
+		{"npm test -- --watch", DecisionAsk}, // exact ≠ prefix
+		{"npm tests", DecisionAsk},
+	}
+	for _, c := range cases {
+		if got := p.Decide(KindShell, c.subj); got != c.want {
+			t.Errorf("Shell %q = %v want %v", c.subj, got, c.want)
+		}
+	}
+}
+
+func TestMatchPathGlob(t *testing.T) {
+	p, _ := NewPolicy(Rules{Allow: []string{"Edit(/home/me/repo/**)", "Read(/etc/*.conf)"}})
+	cases := []struct{ kind Kind; subj string; want Decision }{
+		{KindEdit, "/home/me/repo/a.go", DecisionAllow},
+		{KindEdit, "/home/me/repo/sub/b.go", DecisionAllow}, // ** crosses segments
+		{KindEdit, "/home/me/other.go", DecisionAsk},
+		{KindRead, "/etc/hosts", DecisionAsk},               // *.conf doesn't match hosts
+		{KindRead, "/etc/resolv.conf", DecisionAllow},       // * within a segment
+		{KindEdit, "repo/a.go", DecisionAsk},                // relative subject never matches absolute rule
+	}
+	for _, c := range cases {
+		if got := p.Decide(c.kind, c.subj); got != c.want {
+			t.Errorf("%s %q = %v want %v", c.kind, c.subj, got, c.want)
+		}
+	}
+}
+
+func TestMatchDomain(t *testing.T) {
+	p, _ := NewPolicy(Rules{Allow: []string{"Fetch(domain:github.com)"}})
+	cases := []struct{ subj string; want Decision }{
+		{"github.com", DecisionAllow},
+		{"api.github.com", DecisionAllow},   // subdomains included
+		{"notgithub.com", DecisionAsk},      // no suffix cheat
+		{"gist.github.com.evil.io", DecisionAsk},
+	}
+	for _, c := range cases {
+		if got := p.Decide(KindFetch, c.subj); got != c.want {
+			t.Errorf("Fetch %q = %v want %v", c.subj, got, c.want)
+		}
+	}
+}

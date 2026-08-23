@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/3toInf/hetu/internal/api"
+	"github.com/3toInf/hetu/web"
 )
 
 // WebServer serves the HTTP JSON API + static frontend on top of the unix-socket
@@ -87,10 +90,42 @@ func (ws *WebServer) Handler() http.Handler {
 	return mux
 }
 
-// staticHandler serves the frontend. Task 1 ships no static assets yet, so any
-// non-API path is a 404; Task 2 replaces this with the embedded/disk file server.
+// staticHandler serves the frontend: the embedded dist by default, a disk dir
+// when webDir is set. Unknown non-API paths fall back to index.html (SPA routes);
+// /api/* paths stay 404 so they never reach the SPA fallback.
 func (ws *WebServer) staticHandler() http.Handler {
+	var fsys http.FileSystem
+	if ws.webDir != "" {
+		fsys = http.Dir(ws.webDir)
+	} else {
+		// go:embed nests the files under dist/, so root the file system there.
+		dist, err := fs.Sub(web.Dist, "dist")
+		if err != nil {
+			panic(err) // dist is embedded at build time; cannot fail
+		}
+		fsys = http.FS(dist)
+	}
+	fh := http.FileServer(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		if p == "" {
+			p = "index.html"
+		}
+		if f, err := fsys.Open(p); err == nil {
+			f.Close()
+			fh.ServeHTTP(w, r)
+			return
+		}
+		// SPA fallback: serve index.html for any unknown non-API path.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		// Rewrite to the root so FileServer serves index.html directly; rewriting
+		// to /index.html would 301-redirect to ./ and loop on nested SPA paths.
+		r2 := new(http.Request)
+		*r2 = *r
+		r2.URL.Path = "/"
+		fh.ServeHTTP(w, r2)
 	})
 }

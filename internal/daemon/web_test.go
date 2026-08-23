@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,5 +88,52 @@ func TestWebAPIEndpoints(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(b), `"error"`) {
 		t.Fatalf("expected JSON error body, got %q", b)
+	}
+}
+
+// TestWebStaticServe covers the frontend serving: the embedded dist by default, a
+// disk dir when webDir is set, SPA fallback for unknown non-API paths, and a hard
+// 404 for /api/* so the JSON API is never masked by the fallback.
+func TestWebStaticServe(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+
+	// embedded dist: placeholder index.html must be served at /
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	defer ts.Close()
+	body := getJSON(t, ts.URL+"/")
+	if !strings.Contains(body, "Hetu") {
+		t.Fatalf("index not served: %q", body)
+	}
+
+	// disk override: --web-dir serves that dir instead of the embed
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>disk</html>"), 0o644)
+	ws2 := NewWebServer(srv, "", dir)
+	ts2 := httptest.NewServer(ws2.Handler())
+	defer ts2.Close()
+	body2 := getJSON(t, ts2.URL+"/")
+	if !strings.Contains(body2, "disk") {
+		t.Fatalf("disk override not served: %q", body2)
+	}
+
+	// SPA fallback: unknown non-API path returns index.html
+	body3 := getJSON(t, ts.URL+"/sessions/abc")
+	if !strings.Contains(body3, "Hetu") {
+		t.Fatalf("SPA fallback broken: %q", body3)
+	}
+
+	// /api/* must NOT fall back to the SPA (stays 404)
+	resp, err := http.Get(ts.URL + "/api/not-a-real-endpoint")
+	if err != nil {
+		t.Fatalf("GET /api/...: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown /api path, got %d", resp.StatusCode)
 	}
 }

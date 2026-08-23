@@ -25,7 +25,10 @@ func NewWebServer(srv *Server, addr, webDir string) *WebServer {
 }
 
 // httpWriter adapts the newline-JSON api.Encode stream (one api.Response per op)
-// into HTTP: OK → 200 + raw Body; error → 4xx + {"error": ...}.
+// into HTTP: OK → 200 + raw Body; error → a JSON {"error": ...} body with a
+// status derived from the message. The RPC layer carries no status kind, so a
+// missing resource is recognised by its "not found" sentinel (404); everything
+// else is a client error → 400.
 type httpWriter struct{ w http.ResponseWriter }
 
 func (h *httpWriter) Write(p []byte) (int, error) {
@@ -35,8 +38,14 @@ func (h *httpWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	if !resp.OK {
+		status := http.StatusBadRequest
+		if resp.Err == "not found" {
+			status = http.StatusNotFound
+		}
+		body, _ := json.Marshal(map[string]string{"error": resp.Err})
 		h.w.Header().Set("Content-Type", "application/json")
-		http.Error(h.w, resp.Err, http.StatusBadRequest)
+		h.w.WriteHeader(status)
+		_, _ = h.w.Write(body)
 		return len(p), nil
 	}
 	h.w.Header().Set("Content-Type", "application/json")

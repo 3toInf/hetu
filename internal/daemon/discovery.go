@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"time"
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/project"
@@ -29,10 +28,18 @@ func (s *DiscoveryScheduler) Run(ctx context.Context) error {
 		for d := range ch {
 			proj, _ := s.resolve.ResolveByCWD(ctx, d.CWD)
 
-			// Stable id: reuse the existing row's hetu_id; mint only for brand-new sessions.
-			hetuID := uuid.NewString()
-			if existing, ok, _ := s.store.GetSessionByExternal(ctx, name, d.ExternalID); ok {
+			// Stable id: reuse the existing row's hetu_id; mint only for brand-new
+			// sessions. On a lookup error skip the session rather than upsert with a
+			// fresh uuid (ON CONFLICT would clobber the stable id users rely on).
+			existing, ok, err := s.store.GetSessionByExternal(ctx, name, d.ExternalID)
+			if err != nil {
+				continue
+			}
+			var hetuID string
+			if ok {
 				hetuID = existing.HetuID
+			} else {
+				hetuID = uuid.NewString()
 			}
 
 			_, _ = s.store.UpsertSession(ctx, store.Session{
@@ -42,8 +49,11 @@ func (s *DiscoveryScheduler) Run(ctx context.Context) error {
 			})
 
 			// Sync messages only when the transcript file is newer than the last sync.
+			// Compare in the same precision SetContentSynced stores (whole seconds):
+			// a full-precision After against the truncated marker would re-sync every
+			// discover because real filesystem mtimes carry sub-second components.
 			syncedAt, synced, _ := s.store.ContentSyncedAt(ctx, hetuID)
-			if !d.TranscriptMtime.IsZero() && (!synced || d.TranscriptMtime.After(time.Unix(syncedAt, 0))) {
+			if !d.TranscriptMtime.IsZero() && (!synced || d.TranscriptMtime.Unix() > syncedAt) {
 				if len(d.Messages) > 0 {
 					msgs := make([]store.Message, 0, len(d.Messages))
 					for _, dm := range d.Messages {

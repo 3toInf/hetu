@@ -332,3 +332,13 @@ button:disabled {
   background: var(--attention);
   color: #111;
 }
+
+/* --- M3: attention rows (SessionsView) --- */
+.row-attn {
+  background: rgba(240, 113, 120, 0.06);
+}
+
+.badge-attn {
+  background: #f07178;
+  color: #fff;
+}

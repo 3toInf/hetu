@@ -56,3 +56,23 @@ func TestNewPolicySkipsBadLines(t *testing.T) {
 		t.Fatalf("want 1 err + 1 rule, got errs=%v rules=%d", errs, len(p.rules))
 	}
 }
+
+func TestNewPolicyRejectsConflictingEffects(t *testing.T) {
+	_, errs := NewPolicy(Rules{Allow: []string{"!Read"}})
+	if len(errs) != 1 {
+		t.Errorf("want 1 error for !Read in Allow list, got %d", len(errs))
+	}
+	_, errs2 := NewPolicy(Rules{Deny: []string{"Read"}})
+	if len(errs2) != 1 {
+		t.Errorf("want 1 error for Read in Deny list, got %d", len(errs2))
+	}
+}
+
+func TestParseRejectsKindOther(t *testing.T) {
+	if _, err := Parse("Other"); err == nil {
+		t.Error(`Parse("Other") should error`)
+	}
+	if _, err := Parse("!Other(x)"); err == nil {
+		t.Error(`Parse("!Other(x)") should error`)
+	}
+}

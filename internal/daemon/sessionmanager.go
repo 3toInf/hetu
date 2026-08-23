@@ -200,6 +200,18 @@ func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession
 	m.mu.Lock()
 	delete(m.live, hetuID)
 	m.mu.Unlock()
+	// Wake any lingering subscribers so `hetu watch` exits when the session
+	// completes, instead of blocking on a channel that will never fill again.
+	// Safe against a concurrent cancel→unsubscribe: a cancel after the delete
+	// sees the session is gone and no-ops; a cancel already inside l.mu finds
+	// the nil slice (no identity match, no close); both closers serialize under
+	// l.mu so there is never a double-close.
+	l.mu.Lock()
+	for _, s := range l.subscribers {
+		close(s)
+	}
+	l.subscribers = nil
+	l.mu.Unlock()
 }
 
 func (m *SessionManager) Send(ctx context.Context, hetuID, prompt string) error {
@@ -228,19 +240,21 @@ func (m *SessionManager) Subscribe(hetuID string) (<-chan agent.Event, func(), e
 	l.subscribers = append(l.subscribers, sub)
 	l.mu.Unlock()
 	// The cancel closure captures the bidirectional channel: it is what
-	// Unsubscribe compares against l.subscribers entries, so closing the
+	// unsubscribe compares against l.subscribers entries, so closing the
 	// receive-only view returned to the caller would be the wrong identity.
 	var once sync.Once
 	cancel := func() {
-		once.Do(func() { m.Unsubscribe(hetuID, sub) })
+		once.Do(func() { m.unsubscribe(hetuID, sub) })
 	}
 	return sub, cancel, nil
 }
 
-// Unsubscribe removes and closes a subscriber channel (identity match). It is
+// unsubscribe removes and closes a subscriber channel (identity match). It is
 // a no-op if the session is gone or the channel is not registered — safe to
-// call when the session ended between Subscribe and cancel.
-func (m *SessionManager) Unsubscribe(hetuID string, sub chan agent.Event) {
+// call when the session ended between Subscribe and cancel. Unexported: only
+// the sync.Once cancel closure may call it (a direct double call would panic
+// on double-close).
+func (m *SessionManager) unsubscribe(hetuID string, sub chan agent.Event) {
 	m.mu.Lock()
 	l, ok := m.live[hetuID]
 	m.mu.Unlock()

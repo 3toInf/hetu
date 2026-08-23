@@ -79,12 +79,39 @@ func TestSubscribeCancelRemovesSubscriber(t *testing.T) {
 		t.Fatal("channel must be closed after cancel")
 	}
 	// no subscriber left: broadcast must not panic; internal slice empty
+	mgr.mu.Lock()
 	l := mgr.live[hid]
+	mgr.mu.Unlock()
 	l.mu.Lock()
 	n := len(l.subscribers)
 	l.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("subscriber leaked: %d", n)
+	}
+}
+
+func TestSubscribeClosesOnSessionEnd(t *testing.T) {
+	mgr, hid := newDrivenManager(t)
+	sub, cancel, err := mgr.Subscribe(hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	sess, ok := mgr.LiveSession(hid)
+	if !ok {
+		t.Fatal("session not live")
+	}
+	// Close the underlying fake session: its Events() channel closes, the
+	// pump's range loop ends, and the session-closed block must close sub so
+	// `hetu watch` on a completing session exits instead of hanging.
+	_ = sess.Close()
+	select {
+	case _, still := <-sub:
+		if still {
+			t.Fatal("subscriber channel must be closed when the session ends")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber channel not closed after session end")
 	}
 }
 

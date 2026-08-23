@@ -38,3 +38,11 @@ func SocketPath() string {
 
 // ClaudeSettingsPath returns the path to the Claude settings file for hook injection.
 func ClaudeSettingsPath() string { return filepath.Join(DataDir(), "claude-settings.json") }
+
+// RulesPath returns the approval-rules file path, honoring HETU_RULES.
+func RulesPath() string {
+	if p := os.Getenv("HETU_RULES"); p != "" {
+		return p
+	}
+	return filepath.Join(DataDir(), "rules.json")
+}

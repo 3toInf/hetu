@@ -26,3 +26,10 @@ func TestSocketPathDefaultUnderHome(t *testing.T) {
 	}
 	// also acceptable: a runtime/temp dir
 }
+
+func TestConfigRulesPath(t *testing.T) {
+	t.Setenv("HETU_RULES", "/tmp/x/rules.json")
+	if got := RulesPath(); got != "/tmp/x/rules.json" {
+		t.Fatalf("RulesPath = %q", got)
+	}
+}

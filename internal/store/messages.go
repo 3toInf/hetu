@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"sort"
+	"strings"
 )
 
 type Message struct {
@@ -82,4 +84,59 @@ func (s *Store) ContentSyncedAt(ctx context.Context, hetuID string) (int64, bool
 		return 0, false, err
 	}
 	return v.Int64, v.Valid, nil
+}
+
+type SearchHit struct {
+	HetuID  string
+	Hits    int
+	Snippet string
+}
+
+// SearchMessages runs a phrase query over the FTS index, aggregated per
+// session with the number of matching messages and one snippet.
+func (s *Store) SearchMessages(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	// phrase: strip quotes then wrap, so user input is literal
+	phrase := `"` + strings.ReplaceAll(query, `"`, ` `) + `"`
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT session_hetu, snippet(session_messages_fts, 2, '[', ']', '…', 12)
+		 FROM session_messages_fts WHERE session_messages_fts MATCH ? LIMIT 500`, phrase)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type agg struct {
+		hetu string
+		hits int
+		snip string
+	}
+	order := []string{}
+	m := map[string]*agg{}
+	for rows.Next() {
+		var hetu, snip string
+		if err := rows.Scan(&hetu, &snip); err != nil {
+			return nil, err
+		}
+		a, ok := m[hetu]
+		if !ok {
+			a = &agg{hetu: hetu, snip: snip}
+			m[hetu] = a
+			order = append(order, hetu)
+		}
+		a.hits++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SearchHit, 0, len(order))
+	for _, h := range order {
+		out = append(out, SearchHit{HetuID: h, Hits: m[h].hits, Snippet: m[h].snip})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Hits > out[j].Hits })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }

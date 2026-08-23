@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/3toInf/hetu/internal/session"
@@ -54,5 +55,40 @@ func TestContentSyncedMarkers(t *testing.T) {
 	}
 	if v, ok, _ := st.ContentSyncedAt(ctx, "h1"); !ok || v != 999 {
 		t.Fatalf("expected 999, got %d %v", v, ok)
+	}
+}
+
+func TestSearchMessagesPhrase(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "e1", Status: session.StatusCompleted})
+	st.UpsertSession(ctx, Session{HetuID: "h2", Agent: "claude", ExternalID: "e2", Status: session.StatusCompleted})
+	st.SyncMessages(ctx, "h1", []Message{{Seq: 0, Role: "user", Content: "websocket keeps dropping"}, {Seq: 1, Role: "assistant", Content: "check the websocket handshake logs"}})
+	st.SyncMessages(ctx, "h2", []Message{{Seq: 0, Role: "user", Content: "unrelated"}})
+
+	hits, err := st.SearchMessages(ctx, "websocket", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].HetuID != "h1" || hits[0].Hits != 2 {
+		t.Fatalf("expected 1 session with 2 hits, got %+v", hits)
+	}
+	if !strings.Contains(hits[0].Snippet, "websocket") {
+		t.Fatalf("snippet missing match: %q", hits[0].Snippet)
+	}
+}
+
+func TestSearchMessagesTreatsOperatorLiterally(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "e1", Status: session.StatusCompleted})
+	st.SyncMessages(ctx, "h1", []Message{{Seq: 0, Role: "user", Content: "should we use redis OR postgres?"}})
+	// "redis OR postgres" as a phrase must NOT be parsed as an FTS5 OR operator
+	hits, err := st.SearchMessages(ctx, "redis OR postgres", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("phrase with 'OR' should match literally, got %+v", hits)
 	}
 }

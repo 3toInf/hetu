@@ -128,12 +128,14 @@ func TestWebStaticServe(t *testing.T) {
 	}
 
 	// /api/* must NOT fall back to the SPA (stays 404)
-	resp, err := http.Get(ts.URL + "/api/not-a-real-endpoint")
-	if err != nil {
-		t.Fatalf("GET /api/...: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for unknown /api path, got %d", resp.StatusCode)
+	for _, p := range []string{"/api/not-a-real-endpoint", "/api"} {
+		resp, err := http.Get(ts.URL + p)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d", p, resp.StatusCode)
+		}
 	}
 }

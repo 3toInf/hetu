@@ -149,6 +149,20 @@ func (ts *testServer) seedUnreadSession(ctx context.Context) string {
 	return hid.HetuID
 }
 
+// seedSessionWithMessages creates a session and syncs one user message into it.
+func (ts *testServer) seedSessionWithMessages(ctx context.Context, content string) string {
+	se, err := ts.st.UpsertSession(ctx, store.Session{
+		HetuID: "msg-session", Agent: "claude", CWD: "/x", Status: session.StatusCompleted,
+	})
+	if err != nil {
+		panic(err)
+	}
+	if err := ts.st.SyncMessages(ctx, se.HetuID, []store.Message{{Seq: 0, Role: "user", Content: content, TS: 0}}); err != nil {
+		panic(err)
+	}
+	return se.HetuID
+}
+
 // pushFakeEvent pushes an event through the fake session's event stream
 func (ts *testServer) pushFakeEvent(hetuID string, ev agent.Event) {
 	sess, ok := ts.Mgr.LiveSession(hetuID)
@@ -246,7 +260,7 @@ func TestGetSessionResolvesPrefixAndReturnsPending(t *testing.T) {
 
 	// GetSession should work with a prefix of the hetuID (first 8 chars)
 	shortID := hid[:8]
-	s, pending, err := srv.Client.GetSession(ctx, shortID)
+	s, pending, _, err := srv.Client.GetSession(ctx, shortID)
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
@@ -293,7 +307,7 @@ func TestGetSessionMarksReadInSessionRun(t *testing.T) {
 	}
 
 	// Simulate what sessionRun does: GetSession + MarkRead
-	_, _, err := srv.Client.GetSession(ctx, hid)
+	_, _, _, err := srv.Client.GetSession(ctx, hid)
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
@@ -311,6 +325,23 @@ func TestGetSessionMarksReadInSessionRun(t *testing.T) {
 	}
 	if got.Unread {
 		t.Error("session should be marked as read after MarkRead")
+	}
+}
+
+func TestGetSessionReturnsMessages(t *testing.T) {
+	srv := startTestServer(t)
+	ctx := context.Background()
+	hid := srv.seedSessionWithMessages(ctx, "hello from the past")
+	s, pending, msgs, err := srv.Client.GetSession(ctx, hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pending
+	if len(msgs) != 1 || msgs[0].Content != "hello from the past" || msgs[0].Role != "user" {
+		t.Fatalf("messages not returned: %+v", msgs)
+	}
+	if s.HetuID != hid {
+		t.Fatalf("session mismatch")
 	}
 }
 

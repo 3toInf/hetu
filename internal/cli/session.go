@@ -22,7 +22,7 @@ func newSessionCmd() *cobra.Command {
 
 func sessionRun(cmd *cobra.Command, id string) error {
 	cl := newClient()
-	s, pending, err := cl.GetSession(cmd.Context(), id)
+	s, pending, _, err := cl.GetSession(cmd.Context(), id)
 	if err != nil {
 		return err
 	}

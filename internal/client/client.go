@@ -214,22 +214,23 @@ func (c *Client) RequestPermission(ctx context.Context, sessionID, toolName, too
 	return res.Allow, res.Reason, nil
 }
 
-func (c *Client) GetSession(ctx context.Context, id string) (api.SessionDTO, []api.PendingApprovalDTO, error) {
+func (c *Client) GetSession(ctx context.Context, id string) (api.SessionDTO, []api.PendingApprovalDTO, []api.MessageDTO, error) {
 	r, err := c.call(ctx, "get_session", api.GetSessionReq{ID: id})
 	if err != nil {
-		return api.SessionDTO{}, nil, err
+		return api.SessionDTO{}, nil, nil, err
 	}
 	if !r.OK {
-		return api.SessionDTO{}, nil, errors.New(r.Err)
+		return api.SessionDTO{}, nil, nil, errors.New(r.Err)
 	}
 	var res struct {
-		Session api.SessionDTO          `json:"session"`
-		Pending []api.PendingApprovalDTO `json:"pending"`
+		Session  api.SessionDTO           `json:"session"`
+		Pending  []api.PendingApprovalDTO `json:"pending"`
+		Messages []api.MessageDTO         `json:"messages"`
 	}
 	if err := json.Unmarshal(r.Body, &res); err != nil {
-		return api.SessionDTO{}, nil, err
+		return api.SessionDTO{}, nil, nil, err
 	}
-	return res.Session, res.Pending, nil
+	return res.Session, res.Pending, res.Messages, nil
 }
 
 func (c *Client) Watch(ctx context.Context, id string) (<-chan agent.Event, error) {

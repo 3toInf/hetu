@@ -15,20 +15,21 @@ import (
 var ErrAmbiguousID = errors.New("ambiguous session id; use more characters")
 
 type Session struct {
-	HetuID       string
-	Agent        string
-	ExternalID   string
-	ProjectID    int64
-	Host         string
-	CWD          string
-	Title        string
-	Status       session.Status
-	Driven       bool
-	Unread       bool
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	LastEventAt  *time.Time
-	LastViewedAt *time.Time
+	HetuID         string
+	Agent          string
+	ExternalID     string
+	ProjectID      int64
+	Host           string
+	CWD            string
+	Title          string
+	Status         session.Status
+	Driven         bool
+	Unread         bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	LastEventAt    *time.Time
+	LastViewedAt   *time.Time
+	ContentSyncedAt *time.Time
 }
 
 type ListFilter struct {
@@ -67,15 +68,15 @@ func (s *Store) UpsertSession(ctx context.Context, in Session) (Session, error) 
 		lastView = in.LastViewedAt.Unix()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions(hetu_id, agent, external_id, project_id, host, cwd, title, status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO sessions(hetu_id, agent, external_id, project_id, host, cwd, title, status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at, content_synced_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(agent, external_id) DO UPDATE SET
 			hetu_id=excluded.hetu_id,
 			project_id=COALESCE(excluded.project_id, sessions.project_id),
 			host=excluded.host, cwd=excluded.cwd, title=excluded.title,
 			status=excluded.status, driven=excluded.driven, updated_at=excluded.updated_at,
 			last_event_at=COALESCE(excluded.last_event_at, sessions.last_event_at)`,
-		in.HetuID, in.Agent, in.ExternalID, projID, in.Host, in.CWD, in.Title, in.Status, driven, unread, in.CreatedAt.Unix(), in.UpdatedAt.Unix(), lastEv, lastView)
+		in.HetuID, in.Agent, in.ExternalID, projID, in.Host, in.CWD, in.Title, in.Status, driven, unread, in.CreatedAt.Unix(), in.UpdatedAt.Unix(), lastEv, lastView, nil)
 	if err != nil {
 		return Session{}, err
 	}
@@ -159,7 +160,7 @@ func likePrefix(p string) string {
 	return r.Replace(p) + `%`
 }
 
-const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at`
+const sessionCols = `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at, last_viewed_at, content_synced_at`
 
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var s Session
@@ -167,7 +168,8 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var ct, ut int64
 	var lastEv *int64
 	var lastView *int64
-	if err := row.Scan(&s.HetuID, &s.Agent, &s.ExternalID, &s.ProjectID, &s.Host, &s.CWD, &s.Title, &s.Status, &driven, &unread, &ct, &ut, &lastEv, &lastView); err != nil {
+	var contentSynced *int64
+	if err := row.Scan(&s.HetuID, &s.Agent, &s.ExternalID, &s.ProjectID, &s.Host, &s.CWD, &s.Title, &s.Status, &driven, &unread, &ct, &ut, &lastEv, &lastView, &contentSynced); err != nil {
 		return Session{}, err
 	}
 	s.Driven = driven == 1
@@ -181,6 +183,10 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	if lastView != nil {
 		t := time.Unix(*lastView, 0)
 		s.LastViewedAt = &t
+	}
+	if contentSynced != nil {
+		t := time.Unix(*contentSynced, 0)
+		s.ContentSyncedAt = &t
 	}
 	return s, nil
 }

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"mime"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/3toInf/hetu/internal/api"
 	"github.com/3toInf/hetu/web"
@@ -79,6 +81,70 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// handleEvents streams a driven session's events over SSE. It bypasses
+// ws.call/httpWriter on purpose: that adapter assumes exactly one response
+// write per op, while this stream writes per event for as long as the client
+// stays connected. Unnamed data events carry agent.Event JSON; `event: end`
+// marks session completion (the pump closed our channel); a comment heartbeat
+// every 15s keeps idle proxies from dropping the connection.
+func (ws *WebServer) handleEvents(w http.ResponseWriter, r *http.Request) {
+	se, ok, err := ws.srv.st.ResolveSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	sub, cancel, err := ws.srv.mgr.Subscribe(se.HetuID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"session not driven"}`))
+		return
+	}
+	defer cancel() // client disconnect, session end, or handler exit: unsubscribe
+
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "retry: 3000\n\n") // fast EventSource reconnect
+	flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case ev, open := <-sub:
+			if !open {
+				// pump closed subscribers: session finished. Tell the browser to
+				// stop reconnecting (it would only get 400s for a dead session).
+				fmt.Fprint(w, "event: end\ndata: {}\n\n")
+				flush()
+				return
+			}
+			body, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", body)
+			flush()
+		case <-ticker.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
 // requireJSON is the write-side CSRF guard: every API POST must carry an
 // application/json Content-Type. A cross-site HTML form can only produce
 // urlencoded/multipart/text-plain bodies; a cross-site fetch sending a custom
@@ -114,6 +180,7 @@ func (ws *WebServer) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		ws.call(r.Context(), w, "get_session", api.GetSessionReq{ID: r.PathValue("id")})
 	})
+	mux.HandleFunc("GET /api/sessions/{id}/events", ws.handleEvents)
 	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {
 		ws.call(r.Context(), w, "search", api.SearchReq{Q: r.URL.Query().Get("q")})
 	})

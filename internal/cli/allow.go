@@ -50,8 +50,10 @@ func newAllowAddCmd() *cobra.Command {
 				if isDeny {
 					// policy.NewPolicy requires deny entries to carry the '!'
 					// prefix; a bare rule in the deny array is skipped as
-					// effect-mismatched. Always store the '!'-prefixed form.
-					rs.Deny = append(rs.Deny, "!"+strings.TrimPrefix(rule, "!"))
+					// effect-mismatched. Always store the '!'-prefixed form,
+					// trimming whitespace first so " !Shell(x)" does not become
+					// "! !Shell(x)" (which NewPolicy rejects as kind "!Shell").
+					rs.Deny = append(rs.Deny, "!"+strings.TrimPrefix(strings.TrimSpace(rule), "!"))
 				} else {
 					// A deny-effect rule (e.g. "!X" or " !X") in the allow array
 					// would be skipped by NewPolicy; reject it up front.

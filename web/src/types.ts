@@ -39,3 +39,22 @@ export interface SearchResult {
   hits: number
   snippet: string
 }
+
+export interface PendingApproval {
+  tool_use_id: string
+  tool_name: string
+  tool_input: string
+}
+
+// Mirrors internal/agent/event.go Event JSON (SSE `data:` payloads).
+export interface AgentEvent {
+  type: string
+  text?: string
+  tool_name?: string
+  tool_json?: string
+  tool_use_id?: string
+  approval_state?: string
+  status?: string
+  err?: string
+  seq: number
+}

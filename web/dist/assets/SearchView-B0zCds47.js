@@ -1,1 +1,0 @@
-import{d as a,c as n,a as o,o as s}from"./index-CWLt_2VS.js";const l=a({__name:"SearchView",setup(t){return(r,e)=>(s(),n("div",null,[...e[0]||(e[0]=[o("h2",null,"Search",-1),o("p",{class:"muted"},"Coming soon.",-1)])]))}});export{l as default};

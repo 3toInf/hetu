@@ -1,0 +1,1 @@
+async function t(s){const o=await fetch(s);if(!o.ok)throw new Error(await o.text()||o.statusText);return o.json()}const n=()=>t("/api/projects"),a=s=>t(`/api/sessions?${s}`),e=s=>t(`/api/sessions/${s}`),c=s=>t(`/api/search?q=${encodeURIComponent(s)}`);export{e as a,c as b,n as p,a as s};

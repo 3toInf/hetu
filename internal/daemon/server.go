@@ -122,7 +122,7 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 	case "list_sessions":
 		var b api.ListSessionsReq
 		_ = json.Unmarshal(req.Body, &b)
-		f := store.ListFilter{Status: b.Status, Agent: b.Agent}
+		f := store.ListFilter{Status: b.Status, Agent: b.Agent, Limit: b.Limit}
 		if b.ProjectPath != "" {
 			p, ok, _ := s.st.GetProjectByPath(ctx, b.ProjectPath)
 			if !ok {
@@ -171,7 +171,13 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 				})
 			}
 		}
-		msgs, _ := s.st.RecentMessages(ctx, se.HetuID, 20)
+		// Default keeps real transcripts useful in the web UI (the old hard 20
+		// truncated almost everything); callers opt into more or less via limit.
+		limit := b.Limit
+		if limit <= 0 {
+			limit = 200
+		}
+		msgs, _ := s.st.RecentMessages(ctx, se.HetuID, limit)
 		msgDTOs := make([]api.MessageDTO, 0, len(msgs))
 		for _, m := range msgs {
 			msgDTOs = append(msgDTOs, api.MessageDTO{Role: m.Role, Content: m.Content, Seq: m.Seq, TS: m.TS})

@@ -9,12 +9,23 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/3toInf/hetu/internal/api"
 	"github.com/3toInf/hetu/web"
 )
+
+// queryLimit parses ?limit=, ignoring empty or invalid values (0 = default).
+func queryLimit(r *http.Request) int {
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 0
+}
 
 // WebServer serves the HTTP JSON API + static frontend on top of the unix-socket
 // RPC: each /api/* request is turned into an api.Request and dispatched through
@@ -175,10 +186,11 @@ func (ws *WebServer) Handler() http.Handler {
 			ProjectPath: r.URL.Query().Get("project_path"),
 			Status:      r.URL.Query().Get("status"),
 			Agent:       r.URL.Query().Get("agent"),
+			Limit:       queryLimit(r),
 		})
 	})
 	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
-		ws.call(r.Context(), w, "get_session", api.GetSessionReq{ID: r.PathValue("id")})
+		ws.call(r.Context(), w, "get_session", api.GetSessionReq{ID: r.PathValue("id"), Limit: queryLimit(r)})
 	})
 	mux.HandleFunc("GET /api/sessions/{id}/events", ws.handleEvents)
 	mux.HandleFunc("GET /api/search", func(w http.ResponseWriter, r *http.Request) {

@@ -14,10 +14,10 @@ type Response struct {
 }
 
 // Per-op body types (all plain JSON):
-type ListSessionsReq struct{ ProjectPath string `json:"project_path"`; Status string `json:"status"`; Agent string `json:"agent"` }
+type ListSessionsReq struct{ ProjectPath string `json:"project_path"`; Status string `json:"status"`; Agent string `json:"agent"`; Limit int `json:"limit"` }
 type ListProjectsReq struct{}
 type ListAgentsReq struct{}
-type GetSessionReq struct{ ID string `json:"id"` }
+type GetSessionReq struct{ ID string `json:"id"`; Limit int `json:"limit"` }
 type ResumeReq struct{ ID string `json:"id"` }
 type SendReq struct{ ID string `json:"id"`; Prompt string `json:"prompt"` }
 type CreateReq struct{ ProjectPath string `json:"project_path"`; Prompt string `json:"prompt"` }

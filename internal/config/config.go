@@ -46,3 +46,11 @@ func RulesPath() string {
 	}
 	return filepath.Join(DataDir(), "rules.json")
 }
+
+// LogPath returns the daemon log file path, honoring HETU_LOG.
+func LogPath() string {
+	if p := os.Getenv("HETU_LOG"); p != "" {
+		return p
+	}
+	return filepath.Join(DataDir(), "hetud.log")
+}

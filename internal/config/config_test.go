@@ -33,3 +33,15 @@ func TestConfigRulesPath(t *testing.T) {
 		t.Fatalf("RulesPath = %q", got)
 	}
 }
+
+func TestConfigLogPath(t *testing.T) {
+	t.Setenv("HETU_LOG", "/tmp/x/hetud.log")
+	if got := LogPath(); got != "/tmp/x/hetud.log" {
+		t.Fatalf("LogPath override = %q", got)
+	}
+	t.Setenv("HETU_LOG", "")
+	home, _ := os.UserHomeDir()
+	if got := LogPath(); got != filepath.Join(home, ".hetu", "hetud.log") {
+		t.Fatalf("LogPath default = %q", got)
+	}
+}

@@ -161,3 +161,20 @@ func TestUpdateExternalIDKeepsEventsAndResolvesDupes(t *testing.T) {
 		t.Fatalf("events lost during external id update: %d", n)
 	}
 }
+
+func TestSessionContentSyncedAt(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	se, _ := st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "e1", Status: session.StatusCompleted})
+	if se.ContentSyncedAt != nil {
+		t.Fatal("content_synced_at should be nil on insert")
+	}
+	// column must exist and be settable via a direct UPDATE (the dedicated method comes in Task 2)
+	if _, err := st.db.ExecContext(ctx, `UPDATE sessions SET content_synced_at=12345 WHERE hetu_id='h1'`); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := st.GetSession(ctx, "h1")
+	if got.ContentSyncedAt == nil || got.ContentSyncedAt.Unix() != 12345 {
+		t.Fatalf("content_synced_at not round-tripped: %+v", got.ContentSyncedAt)
+	}
+}

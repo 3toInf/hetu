@@ -76,4 +76,15 @@ func TestWebAPIEndpoints(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+
+	// missing session id → 404 (ResolveSession miss mapped via "not found" sentinel)
+	resp, _ = http.Get(ts.URL + "/api/sessions/missing")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session, got %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), `"error"`) {
+		t.Fatalf("expected JSON error body, got %q", b)
+	}
 }

@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,10 +151,21 @@ func (ts *testServer) seedUnreadSession(ctx context.Context) string {
 	return hid.HetuID
 }
 
+// msgSeed keeps hetu_ids and external_ids unique across seedSessionWithMessages
+// calls: the sessions table has a UNIQUE(agent, external_id) constraint, so two
+// seeded sessions with the same pair would collapse into one row (and the
+// upsert would rename the old row's hetu_id, tripping the session_messages FK).
+var msgSeed int
+
 // seedSessionWithMessages creates a session and syncs one user message into it.
 func (ts *testServer) seedSessionWithMessages(ctx context.Context, content string) string {
+	msgSeed++
 	se, err := ts.st.UpsertSession(ctx, store.Session{
-		HetuID: "msg-session", Agent: "claude", CWD: "/x", Status: session.StatusCompleted,
+		HetuID:     fmt.Sprintf("msg-session-%d", msgSeed),
+		Agent:      "claude",
+		ExternalID: fmt.Sprintf("ext-%d", msgSeed),
+		CWD:        "/x",
+		Status:     session.StatusCompleted,
 	})
 	if err != nil {
 		panic(err)
@@ -403,5 +416,19 @@ func TestWatchCancel(t *testing.T) {
 			srv.Shutdown(context.Background())
 			t.Fatal("watch channel did not close after context cancel (possible goroutine leak)")
 		}
+	}
+}
+
+func TestSearchFullText(t *testing.T) {
+	srv := startTestServer(t)
+	ctx := context.Background()
+	srv.seedSessionWithMessages(ctx, "the websocket keeps dropping")
+	srv.seedSessionWithMessages(ctx, "nothing relevant")
+	res, err := srv.Client.Search(ctx, "websocket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Hits != 1 || !strings.Contains(res[0].Snippet, "websocket") {
+		t.Fatalf("full-text search wrong: %+v", res)
 	}
 }

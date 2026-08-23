@@ -230,23 +230,41 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 	case "search":
 		var b api.SearchReq
 		_ = json.Unmarshal(req.Body, &b)
-		// P1: simple LIKE over title
-		rows, err := s.st.DB().QueryContext(ctx, `SELECT hetu_id, agent, external_id, COALESCE(project_id,0), host, cwd, COALESCE(title,''), status, driven, unread, created_at, updated_at, last_event_at FROM sessions WHERE title LIKE ? ORDER BY updated_at DESC LIMIT 100`, "%"+b.Q+"%")
-		if err != nil {
-			replyErr(w, err)
-			return
+		hits, _ := s.st.SearchMessages(ctx, b.Q, 20)
+		out := make([]api.SearchResultDTO, 0, len(hits))
+		seen := map[string]bool{}
+		for _, h := range hits {
+			seen[h.HetuID] = true
+			se, ok, _ := s.st.GetSession(ctx, h.HetuID)
+			if !ok {
+				continue
+			}
+			path, _ := s.st.ProjectPathByID(ctx, se.ProjectID)
+			out = append(out, api.SearchResultDTO{
+				HetuID: h.HetuID, Agent: se.Agent, Title: se.Title,
+				ProjectPath: path, Hits: h.Hits, Snippet: h.Snippet,
+			})
 		}
-		out := []api.SessionDTO{}
-		for rows.Next() {
-			var dr int
-			var un int
-			var ct, ut int64
-			var lev *int64
-			var se store.Session
-			rows.Scan(&se.HetuID, &se.Agent, &se.ExternalID, &se.ProjectID, &se.Host, &se.CWD, &se.Title, &se.Status, &dr, &un, &ct, &ut, &lev)
-			out = append(out, toDTO(s.st, se))
+		// title fallback for sessions with no content hit: LIKE over ALL sessions,
+		// skip ones already found by FTS (avoids NOT IN on the FTS virtual table)
+		rows, err := s.st.DB().QueryContext(ctx,
+			`SELECT hetu_id, agent, COALESCE(title,''), COALESCE(project_id,0) FROM sessions WHERE title LIKE ? ORDER BY updated_at DESC LIMIT 20`,
+			"%"+b.Q+"%")
+		if err == nil {
+			for rows.Next() {
+				var hid, agent, title string
+				var pid int64
+				if err := rows.Scan(&hid, &agent, &title, &pid); err != nil {
+					continue
+				}
+				if seen[hid] {
+					continue
+				}
+				path, _ := s.st.ProjectPathByID(ctx, pid)
+				out = append(out, api.SearchResultDTO{HetuID: hid, Agent: agent, Title: title, ProjectPath: path, Hits: 0})
+			}
+			rows.Close()
 		}
-		rows.Close()
 		replyOK(w, out)
 	case "list_agents":
 		out := []api.AgentDTO{{Name: "claude", Available: true}}

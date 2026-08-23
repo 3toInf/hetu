@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/3toInf/hetu/internal/api"
@@ -23,8 +25,11 @@ type Server struct {
 	dsc    *DiscoveryScheduler
 	logger *slog.Logger
 
-	ln   net.Listener
-	done chan struct{}
+	// ln is written once by Serve and read by Shutdown, potentially from a
+	// different goroutine, so it must be synchronized.
+	ln           atomic.Pointer[net.Listener]
+	done         chan struct{}
+	shutdownOnce sync.Once
 }
 
 func NewServer(st *store.Store, mgr *SessionManager, dsc *DiscoveryScheduler) *Server {
@@ -45,7 +50,7 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 	if err != nil {
 		return err
 	}
-	s.ln = ln
+	s.ln.Store(&ln)
 	go func() {
 		<-ctx.Done()
 		s.Shutdown(ctx)
@@ -65,14 +70,15 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
-	if s.ln != nil {
-		_ = s.ln.Close()
-	}
-	select {
-	case <-s.done:
-	default:
+	// The select-guard below is not atomic across concurrent callers (the
+	// Serve ctx-watcher and main.go's post-select Shutdown can both fire at
+	// once); sync.Once makes the close exactly-once.
+	s.shutdownOnce.Do(func() {
+		if p := s.ln.Load(); p != nil {
+			_ = (*p).Close() // idempotent; safe to call again
+		}
 		close(s.done)
-	}
+	})
 }
 
 func (s *Server) handle(ctx context.Context, c net.Conn) {

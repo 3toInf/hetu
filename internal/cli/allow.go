@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/3toInf/hetu/internal/config"
 	"github.com/3toInf/hetu/internal/policy"
@@ -42,12 +43,21 @@ func newAllowAddCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return mutateRules(cmd, func(rs *policy.Rules) error {
 				rule := args[0]
-				if _, err := policy.Parse(rule); err != nil {
+				r, err := policy.Parse(rule)
+				if err != nil {
 					return err
 				}
 				if isDeny {
-					rs.Deny = append(rs.Deny, rule)
+					// policy.NewPolicy requires deny entries to carry the '!'
+					// prefix; a bare rule in the deny array is skipped as
+					// effect-mismatched. Always store the '!'-prefixed form.
+					rs.Deny = append(rs.Deny, "!"+strings.TrimPrefix(rule, "!"))
 				} else {
+					// A deny-effect rule (e.g. "!X" or " !X") in the allow array
+					// would be skipped by NewPolicy; reject it up front.
+					if r.Effect == policy.EffectDeny {
+						return fmt.Errorf("deny rules use --deny: %s", rule)
+					}
 					rs.Allow = append(rs.Allow, rule)
 				}
 				return nil
@@ -66,6 +76,9 @@ func newAllowRmCmd() *cobra.Command {
 				target := args[0]
 				list := &rs.Allow
 				if isDeny {
+					// The file stores deny entries '!'-prefixed; compare against
+					// the normalized form so the user can type the bare X.
+					target = "!" + strings.TrimPrefix(target, "!")
 					list = &rs.Deny
 				}
 				for i, r := range *list {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -8,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/claude"
@@ -132,14 +135,25 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 	if addr != "" {
 		ws := daemon.NewWebServer(srv, addr, webDir)
 		hs = &http.Server{Addr: addr, Handler: ws.Handler()}
-		go func() { errCh <- hs.ListenAndServe() }()
+		go func() {
+			// The web listener is best-effort: a bind failure (e.g. the port is
+			// occupied) must not take down the unix-socket CLI path, so log and
+			// continue socket-only instead of surfacing in errCh.
+			if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				lg.Warn("web server exited", "err", err)
+			}
+		}()
 	}
 
 	select {
 	case <-ctx.Done():
 		// graceful: stop driven sessions and both servers
 		if hs != nil {
-			hs.Shutdown(ctx)
+			// ctx is already cancelled here, so give Shutdown a fresh deadline to
+			// actually drain in-flight requests instead of returning immediately.
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = hs.Shutdown(sctx)
+			cancel()
 		}
 	case err := <-errCh:
 		return err

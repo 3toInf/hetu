@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 
@@ -87,7 +88,46 @@ func (ws *WebServer) Handler() http.Handler {
 		ws.call(r.Context(), w, "discover", api.DiscoverReq{})
 	})
 	mux.Handle("/", ws.staticHandler())
-	return mux
+	// Wrap the mux with a Host check: a malicious page can re-bind its domain to
+	// 127.0.0.1 (DNS rebinding) and issue same-origin fetches to this server, so
+	// only loopback names — and the configured listen host — may reach it.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ws.hostAllowed(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// hostAllowed reports whether the request's Host header names a host we serve.
+// Loopback names are always allowed; a non-wildcard listen host is allowed too.
+func (ws *WebServer) hostAllowed(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		host = h
+	}
+	switch host {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	if ah := ws.listenHost(); ah != "" {
+		return host == ah
+	}
+	return false
+}
+
+// listenHost extracts the host part of the configured listen address
+// ("127.0.0.1:19191" → "127.0.0.1"); "" for wildcard binds or when unset.
+func (ws *WebServer) listenHost() string {
+	h, _, err := net.SplitHostPort(ws.addr)
+	if err != nil {
+		return ""
+	}
+	if h == "" || h == "0.0.0.0" || h == "::" {
+		return ""
+	}
+	return h
 }
 
 // staticHandler serves the frontend: the embedded dist by default, a disk dir

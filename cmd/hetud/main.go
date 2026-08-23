@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,14 +20,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Web-server flags, bound in newServeCmd. Package-level so serveRun can read
+// them; the values are only ever written by cobra during flag parsing.
+var (
+	webAddr string // HTTP listen addr ("" = config.WebAddr() unless --no-web)
+	webDir  string // serve frontend from this disk dir ("" = embedded dist)
+	noWeb   bool   // do not start the HTTP server
+)
+
 func main() {
 	root := &cobra.Command{Use: "hetud"}
-	serve := &cobra.Command{Use: "serve", RunE: serveRun}
-	root.AddCommand(serve)
+	root.AddCommand(newServeCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// newServeCmd builds the `hetud serve` command. Extracted from main() so tests
+// can construct it and parse its flags without executing the daemon.
+func newServeCmd() *cobra.Command {
+	c := &cobra.Command{Use: "serve", RunE: serveRun}
+	c.Flags().StringVar(&webAddr, "web-addr", "", "HTTP listen addr (default HETU_WEB_ADDR or 127.0.0.1:19191); empty with --no-web = off")
+	c.Flags().StringVar(&webDir, "web-dir", "", "serve frontend from this disk dir instead of the embedded dist")
+	c.Flags().BoolVar(&noWeb, "no-web", false, "do not start the HTTP server")
+	return c
 }
 
 func serveRun(cmd *cobra.Command, _ []string) error {
@@ -97,9 +115,32 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ctx, socketPath) }()
 
+	// HTTP web server. Effective addr: --web-addr wins; else config.WebAddr()
+	// (HETU_WEB_ADDR or default) unless --no-web turns the server off.
+	addr := webAddr
+	if addr == "" && !noWeb {
+		addr = config.WebAddr()
+	}
+	if webDir != "" {
+		if fi, err := os.Stat(webDir); err != nil || !fi.IsDir() {
+			return fmt.Errorf("web-dir %s is not a directory", webDir)
+		}
+	}
+	// hs is assigned before the goroutine so the ctx.Done branch below can
+	// reach it to shut the HTTP server down alongside the unix-socket one.
+	var hs *http.Server
+	if addr != "" {
+		ws := daemon.NewWebServer(srv, addr, webDir)
+		hs = &http.Server{Addr: addr, Handler: ws.Handler()}
+		go func() { errCh <- hs.ListenAndServe() }()
+	}
+
 	select {
 	case <-ctx.Done():
-		// graceful: stop driven sessions
+		// graceful: stop driven sessions and both servers
+		if hs != nil {
+			hs.Shutdown(ctx)
+		}
 	case err := <-errCh:
 		return err
 	}

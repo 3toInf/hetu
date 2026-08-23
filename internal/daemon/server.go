@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -17,16 +18,25 @@ import (
 )
 
 type Server struct {
-	st  *store.Store
-	mgr *SessionManager
-	dsc *DiscoveryScheduler
+	st     *store.Store
+	mgr    *SessionManager
+	dsc    *DiscoveryScheduler
+	logger *slog.Logger
 
 	ln   net.Listener
 	done chan struct{}
 }
 
 func NewServer(st *store.Store, mgr *SessionManager, dsc *DiscoveryScheduler) *Server {
-	return &Server{st: st, mgr: mgr, dsc: dsc, done: make(chan struct{})}
+	return NewServerWithLogger(st, mgr, dsc, nil)
+}
+
+// NewServerWithLogger is NewServer but with an explicit logger (nil → slog.Default()).
+func NewServerWithLogger(st *store.Store, mgr *SessionManager, dsc *DiscoveryScheduler, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{st: st, mgr: mgr, dsc: dsc, logger: logger, done: make(chan struct{})}
 }
 
 func (s *Server) Serve(ctx context.Context, socketPath string) error {
@@ -308,6 +318,7 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		_ = json.Unmarshal(req.Body, &b)
 		se, ok, _ := s.st.GetSessionByExternal(ctx, "claude", b.SessionID)
 		if !ok {
+			s.logger.Warn("permission request for non-driven session", "session_id", b.SessionID, "tool", b.ToolName, "tool_use_id", b.ToolUseID)
 			replyErr(w, errors.New("session not driven"))
 			return
 		}
@@ -317,6 +328,7 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 		d, err := s.mgr.RequestPermission(rctx, se.HetuID, b.ToolUseID, b.ToolName, b.ToolInput)
 		allow := d.Allow
 		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			s.logger.Warn("permission request timed out", "hetu_id", se.HetuID, "tool_use_id", b.ToolUseID, "tool", b.ToolName)
 			allow = false
 		}
 		replyOK(w, api.PermissionRequestResp{Allow: allow, Reason: d.Reason})

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/3toInf/hetu/internal/claude"
 	"github.com/3toInf/hetu/internal/config"
 	"github.com/3toInf/hetu/internal/daemon"
+	"github.com/3toInf/hetu/internal/logx"
 	"github.com/3toInf/hetu/internal/policy"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/store"
@@ -34,6 +36,18 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 	if err := config.EnsureDataDir(); err != nil {
 		return err
 	}
+
+	// Wire the daemon logger (file + stderr) before anything logs.
+	lg, logF, err := logx.Setup(logx.Options{Path: config.LogPath(), Level: logx.LevelFromEnv(), Stderr: true})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if logF != nil {
+			logF.Close()
+		}
+	}()
+	slog.SetDefault(lg)
 
 	// Single-instance guard: refuse to start if another hetud is already
 	// running, so a second `hetud serve` can't steal the unix socket and orphan
@@ -71,11 +85,14 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("seed rules: %w", err)
 		}
 	}
-	mgr := daemon.NewSessionManagerWithPolicy(st, resolver, agents, policy.NewLoader(rulesPath))
+	mgr := daemon.NewSessionManagerOpts(st, resolver, agents, daemon.ManagerOptions{
+		Policy: policy.NewLoader(rulesPath),
+		Logger: lg,
+	})
 	sch := daemon.NewDiscoveryScheduler(st, resolver, map[string]agent.DiscoverySource{"claude": claudeAgent.DiscoverySource()})
 
 	_ = sch.Run(ctx) // initial discovery
-	srv := daemon.NewServer(st, mgr, sch)
+	srv := daemon.NewServerWithLogger(st, mgr, sch, lg)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ctx, socketPath) }()

@@ -49,12 +49,22 @@ func (l *liveSession) broadcast(ev agent.Event) {
 	}
 }
 
+// ManagerOptions configures a SessionManager. Zero values select the defaults:
+// Policy → a seeded-DefaultRules loader, Logger → slog.Default(), Notifier →
+// notify.NewDesktop().
+type ManagerOptions struct {
+	Policy   *policy.Loader
+	Logger   *slog.Logger
+	Notifier notify.Notifier
+}
+
 type SessionManager struct {
 	store    *store.Store
 	resolve  *project.Resolver
 	agents   map[string]agent.Agent
 	notifier notify.Notifier
 	policy   *policy.Loader
+	logger   *slog.Logger
 
 	mu   sync.Mutex
 	live map[string]*liveSession // hetuID -> live
@@ -62,12 +72,28 @@ type SessionManager struct {
 }
 
 func NewSessionManager(st *store.Store, r *project.Resolver, agents map[string]agent.Agent) *SessionManager {
+	return NewSessionManagerOpts(st, r, agents, ManagerOptions{})
+}
+
+// NewSessionManagerOpts builds a manager with injectable policy loader, logger
+// and notifier; any nil option falls back to its default.
+func NewSessionManagerOpts(st *store.Store, r *project.Resolver, agents map[string]agent.Agent, o ManagerOptions) *SessionManager {
+	if o.Policy == nil {
+		o.Policy = defaultPolicyLoader()
+	}
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+	if o.Notifier == nil {
+		o.Notifier = notify.NewDesktop()
+	}
 	return &SessionManager{
 		store:    st,
 		resolve:  r,
 		agents:   agents,
-		notifier: notify.NewDesktop(),
-		policy:   defaultPolicyLoader(),
+		notifier: o.Notifier,
+		policy:   o.Policy,
+		logger:   o.Logger,
 		live:     map[string]*liveSession{},
 	}
 }
@@ -76,14 +102,7 @@ func NewSessionManager(st *store.Store, r *project.Resolver, agents map[string]a
 // loader (used by main.go with the rules file; NewSessionManager seeds the
 // v0.2-compatible default in-memory instead).
 func NewSessionManagerWithPolicy(st *store.Store, r *project.Resolver, agents map[string]agent.Agent, pol *policy.Loader) *SessionManager {
-	return &SessionManager{
-		store:    st,
-		resolve:  r,
-		agents:   agents,
-		notifier: notify.NewDesktop(),
-		policy:   pol,
-		live:     map[string]*liveSession{},
-	}
+	return NewSessionManagerOpts(st, r, agents, ManagerOptions{Policy: pol})
 }
 
 // defaultPolicyLoader seeds an in-memory loader with DefaultRules() so a
@@ -98,14 +117,7 @@ func defaultPolicyLoader() *policy.Loader {
 
 // newSessionManagerWithNotifier is a test-only constructor that allows injecting a custom notifier
 func newSessionManagerWithNotifier(st *store.Store, r *project.Resolver, agents map[string]agent.Agent, n notify.Notifier) *SessionManager {
-	return &SessionManager{
-		store:    st,
-		resolve:  r,
-		agents:   agents,
-		notifier: n,
-		policy:   defaultPolicyLoader(),
-		live:     map[string]*liveSession{},
-	}
+	return NewSessionManagerOpts(st, r, agents, ManagerOptions{Notifier: n})
 }
 
 // Ensure makes the session driven (resume-or-new) and returns its Hetu id.
@@ -177,18 +189,24 @@ func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession
 		l.broadcast(ev)
 		switch ev.Type {
 		case agent.EventStatus:
-			_ = m.store.UpdateSessionStatus(ctx, hetuID, ev.Status, true)
+			if err := m.store.UpdateSessionStatus(ctx, hetuID, ev.Status, true); err != nil {
+				m.logger.Warn("pump update status", "hetu_id", hetuID, "status", string(ev.Status), "err", err)
+			}
 			m.maybeNotify(hetuID, ev.Status, &last)
 			last = ev.Status
 		case agent.EventApproval:
-			_ = m.store.AppendEvent(ctx, hetuID, ev.Seq, "approval", ev.ToolName+":"+ev.ApprovalState)
+			if err := m.store.AppendEvent(ctx, hetuID, ev.Seq, "approval", ev.ToolName+":"+ev.ApprovalState); err != nil {
+				m.logger.Warn("pump append approval event", "hetu_id", hetuID, "err", err)
+			}
 			m.markUnread(ctx, hetuID)
 		case agent.EventMeta:
 			// Persist the learned external_id (claude mints its session id
 			// only after start). Bookkeeping — not broadcast to subscribers.
 			if ev.ExternalID != "" {
 				if existing, ok, err := m.store.GetSession(ctx, hetuID); err == nil && ok {
-					_ = m.store.UpdateExternalID(ctx, existing.Agent, hetuID, ev.ExternalID)
+					if err := m.store.UpdateExternalID(ctx, existing.Agent, hetuID, ev.ExternalID); err != nil {
+						m.logger.Warn("pump update external id", "hetu_id", hetuID, "err", err)
+					}
 				}
 			}
 		default:
@@ -196,7 +214,9 @@ func (m *SessionManager) pump(ctx context.Context, hetuID string, l *liveSession
 		}
 	}
 	// session closed: final status
-	_ = m.store.UpdateSessionStatus(ctx, hetuID, l.sess.Status(), false)
+	if err := m.store.UpdateSessionStatus(ctx, hetuID, l.sess.Status(), false); err != nil {
+		m.logger.Warn("pump final status", "hetu_id", hetuID, "status", string(l.sess.Status()), "err", err)
+	}
 	m.mu.Lock()
 	delete(m.live, hetuID)
 	m.mu.Unlock()
@@ -295,10 +315,17 @@ func (m *SessionManager) LiveSession(hetuID string) (agent.Session, bool) {
 
 func (m *SessionManager) RequestPermission(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {
 	kind, subject := policy.Extract("claude", toolName, toolInput)
-	dec, rule, _, err := m.policy.Decide(kind, subject)
+	dec, rule, matched, err := m.policy.Decide(kind, subject)
 	if err != nil {
-		m.logPolicyIssue(hetuID, err) // slog warn; decision still made from last-good
+		// Decision still made from last-good; surface the load/parse problem.
+		m.logger.Warn("policy", "hetu_id", hetuID, "err", err)
 	}
+	ruleStr := ""
+	if matched {
+		ruleStr = rule.String()
+	}
+	m.logger.Info("hetu permission", "hetu_id", hetuID, "tool", toolName, "kind", string(kind),
+		"subject", subject, "decision", decisionString(dec), "rule", ruleStr)
 	switch dec {
 	case policy.DecisionAllow:
 		return ApprovalDecision{Allow: true}, nil
@@ -308,11 +335,15 @@ func (m *SessionManager) RequestPermission(ctx context.Context, hetuID, toolUseI
 	return m.RequestApproval(ctx, hetuID, toolUseID, toolName, toolInput)
 }
 
-// logPolicyIssue surfaces policy load/parse problems. Task 9 replaces the
-// slog.Default() with an injected logger; keep this call site in
-// RequestPermission so that migration is a one-line change.
-func (m *SessionManager) logPolicyIssue(hetuID string, err error) {
-	slog.Default().Warn("policy", "hetu_id", hetuID, "err", err)
+func decisionString(d policy.Decision) string {
+	switch d {
+	case policy.DecisionAllow:
+		return "allow"
+	case policy.DecisionDeny:
+		return "deny"
+	default:
+		return "ask"
+	}
 }
 
 func (m *SessionManager) RequestApproval(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {
@@ -343,6 +374,7 @@ func (m *SessionManager) RequestApproval(ctx context.Context, hetuID, toolUseID,
 		if !d.Allow {
 			state = "denied"
 		}
+		m.logger.Info("approval", "hetu_id", hetuID, "tool_use_id", toolUseID, "decision", "resolved", "allow", d.Allow)
 		l.broadcast(agent.Event{Type: agent.EventApproval, ToolUseID: toolUseID, ApprovalState: state})
 		m.setLiveStatus(l, hetuID, session.StatusRunning)
 		return d, nil
@@ -350,6 +382,7 @@ func (m *SessionManager) RequestApproval(ctx context.Context, hetuID, toolUseID,
 		l.mu.Lock()
 		delete(l.pending, toolUseID)
 		l.mu.Unlock()
+		m.logger.Info("approval", "hetu_id", hetuID, "tool_use_id", toolUseID, "decision", "timeout")
 		l.broadcast(agent.Event{Type: agent.EventApproval, ToolUseID: toolUseID, ApprovalState: "timeout"})
 		m.setLiveStatus(l, hetuID, session.StatusRunning)
 		return ApprovalDecision{Allow: false, Reason: "approval timed out"}, ctx.Err()
@@ -394,14 +427,20 @@ func (m *SessionManager) PendingApprovals(hetuID string) []PendingApproval {
 
 // setLiveStatus is a helper that updates the session status in-memory, in the store, and via broadcast
 func (m *SessionManager) setLiveStatus(l *liveSession, hetuID string, st session.Status) {
-	_ = l.sess.SetStatus(st)
-	_ = m.store.UpdateSessionStatus(context.Background(), hetuID, st, true)
+	if err := l.sess.SetStatus(st); err != nil {
+		m.logger.Warn("set live status", "hetu_id", hetuID, "status", string(st), "err", err)
+	}
+	if err := m.store.UpdateSessionStatus(context.Background(), hetuID, st, true); err != nil {
+		m.logger.Warn("update session status", "hetu_id", hetuID, "status", string(st), "err", err)
+	}
 	l.broadcast(agent.Event{Type: agent.EventStatus, Status: st})
 }
 
 // markUnread marks the session as unread
 func (m *SessionManager) markUnread(ctx context.Context, hetuID string) {
-	_ = m.store.MarkUnread(ctx, hetuID)
+	if err := m.store.MarkUnread(ctx, hetuID); err != nil {
+		m.logger.Warn("mark unread", "hetu_id", hetuID, "err", err)
+	}
 }
 
 // maybeNotify sends a desktop notification when the session status transitions to a waiting/error/completed state
@@ -418,7 +457,9 @@ func (m *SessionManager) maybeNotify(hetuID string, cur session.Status, last *se
 		if ok && se.Title != "" {
 			body = se.Title + " · " + string(cur)
 		}
-		_ = m.notifier.Notify(notify.Notification{Title: "hetu", Body: body})
+		if err := m.notifier.Notify(notify.Notification{Title: "hetu", Body: body}); err != nil {
+			m.logger.Warn("notify", "hetu_id", hetuID, "status", string(cur), "err", err)
+		}
 	}
 }
 

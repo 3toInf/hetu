@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/notify"
+	"github.com/3toInf/hetu/internal/policy"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -52,6 +54,7 @@ type SessionManager struct {
 	resolve  *project.Resolver
 	agents   map[string]agent.Agent
 	notifier notify.Notifier
+	policy   *policy.Loader
 
 	mu   sync.Mutex
 	live map[string]*liveSession // hetuID -> live
@@ -64,8 +67,33 @@ func NewSessionManager(st *store.Store, r *project.Resolver, agents map[string]a
 		resolve:  r,
 		agents:   agents,
 		notifier: notify.NewDesktop(),
+		policy:   defaultPolicyLoader(),
 		live:     map[string]*liveSession{},
 	}
+}
+
+// NewSessionManagerWithPolicy is NewSessionManager but with an explicit policy
+// loader (used by main.go with the rules file; NewSessionManager seeds the
+// v0.2-compatible default in-memory instead).
+func NewSessionManagerWithPolicy(st *store.Store, r *project.Resolver, agents map[string]agent.Agent, pol *policy.Loader) *SessionManager {
+	return &SessionManager{
+		store:    st,
+		resolve:  r,
+		agents:   agents,
+		notifier: notify.NewDesktop(),
+		policy:   pol,
+		live:     map[string]*liveSession{},
+	}
+}
+
+// defaultPolicyLoader seeds an in-memory loader with DefaultRules() so a
+// manager constructed without a rules file keeps the v0.2 behavior (Read
+// auto-allowed, everything else asks the human).
+func defaultPolicyLoader() *policy.Loader {
+	l := policy.NewLoader("") // no file ⇒ ask-everything
+	p, _ := policy.NewPolicy(policy.DefaultRules())
+	l.Seed(p)
+	return l
 }
 
 // newSessionManagerWithNotifier is a test-only constructor that allows injecting a custom notifier
@@ -75,6 +103,7 @@ func newSessionManagerWithNotifier(st *store.Store, r *project.Resolver, agents 
 		resolve:  r,
 		agents:   agents,
 		notifier: n,
+		policy:   defaultPolicyLoader(),
 		live:     map[string]*liveSession{},
 	}
 }
@@ -220,15 +249,26 @@ func (m *SessionManager) LiveSession(hetuID string) (agent.Session, bool) {
 	return l.sess, true
 }
 
-// readOnlyTools auto-allow without bothering the human. Unknown tools are
-// NOT here → they ask the human (safe default). Extend in v0.3 (allowlist).
-var readOnlyTools = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true}
-
 func (m *SessionManager) RequestPermission(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {
-	if readOnlyTools[toolName] {
+	kind, subject := policy.Extract("claude", toolName, toolInput)
+	dec, rule, _, err := m.policy.Decide(kind, subject)
+	if err != nil {
+		m.logPolicyIssue(hetuID, err) // slog warn; decision still made from last-good
+	}
+	switch dec {
+	case policy.DecisionAllow:
 		return ApprovalDecision{Allow: true}, nil
+	case policy.DecisionDeny:
+		return ApprovalDecision{Allow: false, Reason: "denied by rule " + rule.String()}, nil
 	}
 	return m.RequestApproval(ctx, hetuID, toolUseID, toolName, toolInput)
+}
+
+// logPolicyIssue surfaces policy load/parse problems. Task 9 replaces the
+// slog.Default() with an injected logger; keep this call site in
+// RequestPermission so that migration is a one-line change.
+func (m *SessionManager) logPolicyIssue(hetuID string, err error) {
+	slog.Default().Warn("policy", "hetu_id", hetuID, "err", err)
 }
 
 func (m *SessionManager) RequestApproval(ctx context.Context, hetuID, toolUseID, toolName, toolInput string) (ApprovalDecision, error) {

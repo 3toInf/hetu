@@ -11,6 +11,7 @@ import (
 	"github.com/3toInf/hetu/internal/claude"
 	"github.com/3toInf/hetu/internal/config"
 	"github.com/3toInf/hetu/internal/daemon"
+	"github.com/3toInf/hetu/internal/policy"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/store"
 	"github.com/spf13/cobra"
@@ -62,7 +63,15 @@ func serveRun(cmd *cobra.Command, _ []string) error {
 	})
 	resolver := project.NewResolver(st)
 	agents := map[string]agent.Agent{"claude": claudeAgent}
-	mgr := daemon.NewSessionManager(st, resolver, agents)
+
+	// Seed the approval-rules file on first run, then build a loader watching it.
+	rulesPath := config.RulesPath()
+	if _, err := os.Stat(rulesPath); os.IsNotExist(err) {
+		if err := policy.Save(rulesPath, policy.DefaultRules()); err != nil {
+			return fmt.Errorf("seed rules: %w", err)
+		}
+	}
+	mgr := daemon.NewSessionManagerWithPolicy(st, resolver, agents, policy.NewLoader(rulesPath))
 	sch := daemon.NewDiscoveryScheduler(st, resolver, map[string]agent.DiscoverySource{"claude": claudeAgent.DiscoverySource()})
 
 	_ = sch.Run(ctx) // initial discovery

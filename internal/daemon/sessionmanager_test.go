@@ -49,10 +49,11 @@ func TestEnsureAndSubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub, err := m.Subscribe(id)
+	sub, cancel, err := m.Subscribe(id)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cancel()
 	fs.Emit(agent.Event{Type: agent.EventText, Text: "hi"})
 	fs.SetStatus(statusCompletedForTest())
 	fs.Emit(agent.Event{Type: agent.EventStatus, Status: statusCompletedForTest()})
@@ -63,6 +64,27 @@ func TestEnsureAndSubscribe(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("did not receive event")
+	}
+}
+
+func TestSubscribeCancelRemovesSubscriber(t *testing.T) {
+	mgr, hid := newDrivenManager(t)
+	sub, cancel, err := mgr.Subscribe(hid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	cancel() // idempotent
+	if _, still := <-sub; still {
+		t.Fatal("channel must be closed after cancel")
+	}
+	// no subscriber left: broadcast must not panic; internal slice empty
+	l := mgr.live[hid]
+	l.mu.Lock()
+	n := len(l.subscribers)
+	l.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("subscriber leaked: %d", n)
 	}
 }
 
@@ -329,10 +351,11 @@ func cancelCtx(ctx context.Context) context.Context {
 func TestPumpSetsUnreadAndNotifiesOnWaiting(t *testing.T) {
 	mgr, hid, fake, fs := newDrivenManagerWithNotifier(t)
 	ctx := context.Background()
-	evs, err := mgr.Subscribe(hid)
+	evs, cancel, err := mgr.Subscribe(hid)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cancel()
 
 	// Simulate a text event to set unread
 	fs.Emit(agent.Event{Type: agent.EventText, Text: "hi", Seq: 1})
@@ -429,10 +452,11 @@ func TestMetaEventPersistsExternalID(t *testing.T) {
 	}
 
 	// Verify meta events are NOT broadcast to subscribers (internal bookkeeping)
-	sub, err := mgr.Subscribe(hid)
+	sub, cancel, err := mgr.Subscribe(hid)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cancel()
 	// Drain any events in the subscription
 	for {
 		select {

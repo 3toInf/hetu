@@ -84,16 +84,11 @@ func (ts *testServer) ensureDrivenSession(ctx context.Context) string {
 // waitForPending waits for a pending approval to appear for the given toolUseID
 func (ts *testServer) waitForPending(t *testing.T, hetuID, toolUseID string) {
 	t.Helper()
-	sub, err := ts.Mgr.Subscribe(hetuID)
+	sub, cancel, err := ts.Mgr.Subscribe(hetuID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		go func() {
-			for range sub {
-			}
-		}()
-	}()
+	defer cancel()
 
 	deadline := time.After(2 * time.Second)
 	for {

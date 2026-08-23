@@ -139,3 +139,39 @@ func TestWebStaticServe(t *testing.T) {
 		}
 	}
 }
+
+// TestWebRejectsForeignHost verifies the DNS-rebinding defense: a request with a
+// non-loopback Host header (what a rebinding attacker's page would send) is 403.
+func TestWebRejectsForeignHost(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/projects", nil)
+	req.Host = "evil.example.com:19191"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for foreign Host, got %d", resp.StatusCode)
+	}
+
+	// loopback Host stays allowed
+	req2, _ := http.NewRequest("GET", ts.URL+"/api/projects", nil)
+	req2.Host = "127.0.0.1:19191"
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for loopback Host, got %d", resp2.StatusCode)
+	}
+}

@@ -246,11 +246,14 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 			replyErr(w, errors.New("not found"))
 			return
 		}
-		sub, err := s.mgr.Subscribe(se.HetuID)
+		sub, cancel, err := s.mgr.Subscribe(se.HetuID)
 		if err != nil {
 			replyErr(w, err)
 			return
 		}
+		// Unsubscribe on every exit: write error, client disconnect, shutdown.
+		// Closing the subscriber channel terminates the range below cleanly.
+		defer cancel()
 		for ev := range sub {
 			body, err := json.Marshal(ev)
 			if err != nil {

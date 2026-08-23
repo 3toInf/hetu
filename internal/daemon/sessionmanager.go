@@ -212,12 +212,14 @@ func (m *SessionManager) Send(ctx context.Context, hetuID, prompt string) error 
 	return l.sess.Send(ctx, prompt)
 }
 
-func (m *SessionManager) Subscribe(hetuID string) (<-chan agent.Event, error) {
+// Subscribe registers a subscriber; the returned cancel removes and closes
+// it. Cancel is idempotent and safe from any goroutine.
+func (m *SessionManager) Subscribe(hetuID string) (<-chan agent.Event, func(), error) {
 	m.mu.Lock()
 	l, ok := m.live[hetuID]
 	m.mu.Unlock()
 	if !ok {
-		return nil, errNotDriven
+		return nil, nil, errNotDriven
 	}
 	sub := make(chan agent.Event, 64)
 	// l.subscribers is read by broadcast under l.mu — the append must take
@@ -225,7 +227,35 @@ func (m *SessionManager) Subscribe(hetuID string) (<-chan agent.Event, error) {
 	l.mu.Lock()
 	l.subscribers = append(l.subscribers, sub)
 	l.mu.Unlock()
-	return sub, nil
+	// The cancel closure captures the bidirectional channel: it is what
+	// Unsubscribe compares against l.subscribers entries, so closing the
+	// receive-only view returned to the caller would be the wrong identity.
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() { m.Unsubscribe(hetuID, sub) })
+	}
+	return sub, cancel, nil
+}
+
+// Unsubscribe removes and closes a subscriber channel (identity match). It is
+// a no-op if the session is gone or the channel is not registered — safe to
+// call when the session ended between Subscribe and cancel.
+func (m *SessionManager) Unsubscribe(hetuID string, sub chan agent.Event) {
+	m.mu.Lock()
+	l, ok := m.live[hetuID]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	l.mu.Lock()
+	for i, s := range l.subscribers {
+		if s == sub {
+			l.subscribers = append(l.subscribers[:i], l.subscribers[i+1:]...)
+			close(s) // close only when found; double-close panics
+			break
+		}
+	}
+	l.mu.Unlock()
 }
 
 func (m *SessionManager) LiveStatus(hetuID string) (session.Status, bool) {

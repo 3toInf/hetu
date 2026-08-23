@@ -1,0 +1,3 @@
+# Only node_modules is ignored. web/dist MUST be committed: it is the go:embed
+# input (web/embed.go embeds all:dist) and the built frontend ships inside hetud.
+node_modules

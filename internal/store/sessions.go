@@ -257,10 +257,21 @@ func (s *Store) MarkUnread(ctx context.Context, hetuID string) error {
 // (claude mints its session id only after start). A row that discovery
 // created meanwhile for the same (agent, external_id) is removed so the
 // driven session's hetu_id stays the single identity. Unlike delete+reinsert
-// this never trips the session_events foreign key.
+// this never trips the session_events, session_messages, or
+// session_messages_fts foreign keys (the child rows are deleted first).
 func (s *Store) UpdateExternalID(ctx context.Context, agentName, hetuID, externalID string) error {
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM session_events WHERE session_hetu IN (SELECT hetu_id FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?)`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_messages WHERE session_hetu IN (SELECT hetu_id FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?)`,
+		agentName, externalID, hetuID); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_messages_fts WHERE session_hetu IN (SELECT hetu_id FROM sessions WHERE agent=? AND external_id=? AND hetu_id<>?)`,
 		agentName, externalID, hetuID); err != nil {
 		return err
 	}

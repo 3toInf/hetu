@@ -40,10 +40,13 @@ func TestDiscoveryStableHetuIDAndSync(t *testing.T) {
 	st, _ := store.Open(ctx, tempPath(t))
 	t.Cleanup(func() { st.Close() })
 	r := project.NewResolver(st)
-	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Sub-second mtime: proves incrementality uses the same precision that
+	// SetContentSynced stores (a full-precision comparison against the truncated
+	// marker would re-sync every discover — the bug Fix 1 addresses).
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 500000000, time.UTC)
 	disc := &fake.DiscoverySource{Sessions: []agent.DiscoveredSession{{
 		Agent: "claude", ExternalID: "ext1", CWD: "/x", Status: session.StatusCompleted,
-		Messages:        []agent.DiscoveredMessage{{Role: "user", Content: "hello", Seq: 0}},
+		Messages: []agent.DiscoveredMessage{{Role: "user", Content: "hello", Seq: 0}},
 		TranscriptMtime: fixed,
 	}}}
 	sch := NewDiscoveryScheduler(st, r, map[string]agent.DiscoverySource{"claude": disc})
@@ -61,7 +64,9 @@ func TestDiscoveryStableHetuIDAndSync(t *testing.T) {
 		t.Fatalf("messages not synced: %+v", ms)
 	}
 
-	// run again with the SAME mtime → no message re-sync (id stays stable, content unchanged)
+	// run again with the SAME mtime → no re-sync: id stays stable AND different
+	// content is NOT applied (would catch an unconditional re-sync)
+	disc.Sessions[0].Messages = []agent.DiscoveredMessage{{Role: "user", Content: "should-not-apply", Seq: 0}}
 	if err := sch.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +75,7 @@ func TestDiscoveryStableHetuIDAndSync(t *testing.T) {
 		t.Fatalf("hetu_id changed across discovers: %q -> %q", id1, se2.HetuID)
 	}
 	ms2, _ := st.RecentMessages(ctx, id1, 0)
-	if len(ms2) != 1 {
+	if len(ms2) != 1 || ms2[0].Content != "hello" {
 		t.Fatalf("unexpected re-sync: %+v", ms2)
 	}
 

@@ -54,3 +54,13 @@ func LogPath() string {
 	}
 	return filepath.Join(DataDir(), "hetud.log")
 }
+
+const defaultWebAddr = "127.0.0.1:19191"
+
+// WebAddr returns the HTTP listen address: HETU_WEB_ADDR if set, else the default.
+func WebAddr() string {
+	if v := os.Getenv("HETU_WEB_ADDR"); v != "" {
+		return v
+	}
+	return defaultWebAddr
+}

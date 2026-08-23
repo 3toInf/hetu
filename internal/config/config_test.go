@@ -45,3 +45,14 @@ func TestConfigLogPath(t *testing.T) {
 		t.Fatalf("LogPath default = %q", got)
 	}
 }
+
+func TestWebAddr(t *testing.T) {
+	t.Setenv("HETU_WEB_ADDR", "127.0.0.1:9999")
+	if got := WebAddr(); got != "127.0.0.1:9999" {
+		t.Fatalf("env not honored: %q", got)
+	}
+	t.Setenv("HETU_WEB_ADDR", "")
+	if got := WebAddr(); got != defaultWebAddr {
+		t.Fatalf("default wrong: %q", got)
+	}
+}

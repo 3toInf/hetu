@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/3toInf/hetu/internal/agent"
 	"github.com/3toInf/hetu/internal/agent/fake"
 	"github.com/3toInf/hetu/internal/notify"
+	"github.com/3toInf/hetu/internal/policy"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -107,6 +109,29 @@ func TestEnsurePreservesDiscoveredID(t *testing.T) {
 func newDrivenManager(t *testing.T) (*SessionManager, string) {
 	m, _ := newMgr(t)
 	ctx := context.Background()
+	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Verify the session is actually live by checking status
+	if _, ok := m.LiveStatus(hid); !ok {
+		t.Fatal("session not live after Ensure")
+	}
+	return m, hid
+}
+
+// newDrivenManagerWithPolicy is newDrivenManager but with an explicit policy
+// loader built from rulesPath (via NewSessionManagerWithPolicy).
+func newDrivenManagerWithPolicy(t *testing.T, rulesPath string) (*SessionManager, string) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	r := project.NewResolver(st)
+	fs := fake.NewSession("h1", "ext1", statusRunningForTest())
+	fa := &fake.Agent{N: "claude", Drv: &fake.Driver{OnStart: func(_ context.Context, _ agent.StartRequest) (agent.Session, error) {
+		return fs, nil
+	}}}
+	m := NewSessionManagerWithPolicy(st, r, map[string]agent.Agent{"claude": fa}, policy.NewLoader(rulesPath))
 	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
 	if err != nil {
 		t.Fatal(err)
@@ -422,4 +447,42 @@ func TestMetaEventPersistsExternalID(t *testing.T) {
 	}
 done:
 	// Test passes
+}
+
+func TestRequestPermissionPolicyShortCircuits(t *testing.T) {
+	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "rules.json")
+	// NB: deny rules carry the '!' prefix (Task 1 Parse semantics; a bare
+	// "Shell(rm:*)" in the deny list is rejected as a conflicting effect).
+	policy.Save(rulesPath, policy.Rules{
+		Allow: []string{"Shell(echo:*)"},
+		Deny:  []string{"!Shell(rm:*)"},
+	})
+	mgr, hid := newDrivenManagerWithPolicy(t, rulesPath)
+	ctx := context.Background()
+
+	// allow rule: no pending registered
+	d, err := mgr.RequestPermission(ctx, hid, "tu-a", "Bash", `{"command":"echo hi"}`)
+	if err != nil || !d.Allow {
+		t.Fatalf("rule-allow: %+v %v", d, err)
+	}
+	if p := mgr.PendingApprovals(hid); len(p) != 0 {
+		t.Fatalf("allow rule must not register pending: %v", p)
+	}
+	// deny rule: immediate deny with reason naming the rule
+	d, err = mgr.RequestPermission(ctx, hid, "tu-b", "Bash", `{"command":"rm -rf x"}`)
+	if err != nil || d.Allow || !strings.Contains(d.Reason, "rm:*") {
+		t.Fatalf("rule-deny: %+v %v", d, err)
+	}
+	// unruly: falls through to human approval (pending registered)
+	go func() { mgr.RequestApproval(ctx, hid, "tu-c", "Bash", `{"command":"git push"}`) }()
+	waitForApprovalPending(t, mgr, hid, "tu-c")
+}
+
+func TestRequestPermissionDefaultsAsk(t *testing.T) {
+	mgr, hid := newDrivenManager(t) // NewSessionManager default: Read allow, rest ask
+	ctx := context.Background()
+	if d, _ := mgr.RequestPermission(ctx, hid, "t1", "Read", `{"file_path":"/a"}`); !d.Allow {
+		t.Fatal("default policy must still allow Read")
+	}
 }

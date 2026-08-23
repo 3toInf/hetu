@@ -116,8 +116,10 @@ func (ws *WebServer) staticHandler() http.Handler {
 			fh.ServeHTTP(w, r)
 			return
 		}
-		// SPA fallback: serve index.html for any unknown non-API path.
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// SPA fallback: serve index.html for any unknown non-API path. The exact
+		// path /api is also API territory — without it the fallback would 200 the
+		// SPA for a bare /api.
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
 			return
 		}

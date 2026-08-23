@@ -95,12 +95,32 @@ func TestAllowAddDenyRoundTrip(t *testing.T) {
 	}
 
 	// add "!X" --deny is idempotent: stores exactly !X.
-	if _, err := run("add", "!Shell(rm -rf *)", "--deny"); err != nil {
+	if _, err := run("add", "!Shell(git pull:*)", "--deny"); err != nil {
 		t.Fatal(err)
 	}
 	rs, _ = policy.Load(rulesPath)
-	if len(rs.Deny) != 2 || rs.Deny[1] != "!Shell(rm -rf *)" {
-		t.Fatalf("deny after add '!X' --deny = %#v, want second entry !Shell(rm -rf *)", rs.Deny)
+	if len(rs.Deny) != 2 || rs.Deny[1] != "!Shell(git pull:*)" {
+		t.Fatalf("deny after add '!X' --deny = %#v, want second entry !Shell(git pull:*)", rs.Deny)
+	}
+
+	// add " !X" --deny with leading whitespace must normalize to a single '!':
+	// previously "!"+TrimPrefix(" !Shell(...)", "!") stored "! !Shell(...)",
+	// which NewPolicy rejected (unknown kind "!Shell") and silently skipped.
+	if _, err := run("add", " !Shell(rm -rf *)", "--deny"); err != nil {
+		t.Fatal(err)
+	}
+	rs, _ = policy.Load(rulesPath)
+	if len(rs.Deny) != 3 || rs.Deny[2] != "!Shell(rm -rf *)" {
+		t.Fatalf("deny after add ' !X' --deny = %#v, want third entry !Shell(rm -rf *)", rs.Deny)
+	}
+	p, parseErrs = policy.NewPolicy(rs)
+	if len(parseErrs) != 0 {
+		t.Fatalf("NewPolicy returned parse errors after whitespace --deny add: %v", parseErrs)
+	}
+	// Shell spec "rm -rf *" (no ":*" suffix) is exact-match, so the subject is
+	// the literal command; the deny must actually fire.
+	if d := p.Decide(policy.KindShell, "rm -rf *"); d != policy.DecisionDeny {
+		t.Fatalf("Decide(Shell, rm -rf *) = %v, want DecisionDeny", d)
 	}
 
 	// add "!X" without --deny must be rejected, not silently saved as a
@@ -127,7 +147,7 @@ func TestAllowAddDenyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs, _ = policy.Load(rulesPath)
-	if len(rs.Deny) != 1 || rs.Deny[0] != "!Shell(rm -rf *)" {
-		t.Fatalf("deny after rm --deny = %#v, want [!Shell(rm -rf *)]", rs.Deny)
+	if len(rs.Deny) != 2 || rs.Deny[0] != "!Shell(git pull:*)" || rs.Deny[1] != "!Shell(rm -rf *)" {
+		t.Fatalf("deny after rm --deny = %#v, want [!Shell(git pull:*), !Shell(rm -rf *)]", rs.Deny)
 	}
 }

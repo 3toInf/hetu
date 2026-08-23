@@ -1,6 +1,10 @@
 package policy
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseValid(t *testing.T) {
 	cases := []struct{ in string; want Rule }{
@@ -123,5 +127,37 @@ func TestMatchDomain(t *testing.T) {
 		if got := p.Decide(KindFetch, c.subj); got != c.want {
 			t.Errorf("Fetch %q = %v want %v", c.subj, got, c.want)
 		}
+	}
+}
+
+func TestDefaultRules(t *testing.T) {
+	if d := DefaultRules(); len(d.Allow) != 1 || d.Allow[0] != "Read" || len(d.Deny) != 0 {
+		t.Fatalf("DefaultRules = %+v", d)
+	}
+}
+
+func TestLoadSaveRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.json")
+	rs := Rules{Allow: []string{"Read", "Shell(git status:*)"}, Deny: []string{"Shell(git push:*)"}}
+	if err := Save(path, rs); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil || len(got.Allow) != 2 || got.Deny[0] != "Shell(git push:*)" {
+		t.Fatalf("round trip: %+v %v", got, err)
+	}
+}
+
+func TestLoadMissingFile(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
+		t.Fatal("missing file must error (caller decides to seed defaults)")
+	}
+}
+
+func TestLoadBadJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.json")
+	os.WriteFile(path, []byte("{not json"), 0o600)
+	if _, err := Load(path); err == nil {
+		t.Fatal("bad JSON must error (daemon degrades to ask-everything)")
 	}
 }

@@ -72,6 +72,15 @@ func printAgents(w io.Writer, list []api.AgentDTO) {
 	tw.Flush()
 }
 
+func printSearchResults(w io.Writer, res []api.SearchResultDTO) {
+	for _, r := range res {
+		fmt.Fprintf(w, "[%s] %s              (%d hits)\n", r.Agent, r.Title, r.Hits)
+		if r.Snippet != "" {
+			fmt.Fprintf(w, "  %s\n", r.Snippet)
+		}
+	}
+}
+
 func reltime(unix int64) string {
 	if unix == 0 {
 		return "-"

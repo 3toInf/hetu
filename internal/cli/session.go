@@ -10,7 +10,7 @@ import (
 )
 
 func newSessionCmd() *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "session <id>",
 		Short: "Show session details",
 		Args:  cobra.ExactArgs(1),
@@ -18,15 +18,21 @@ func newSessionCmd() *cobra.Command {
 			return sessionRun(cmd, args[0])
 		},
 	}
+	c.Flags().Int("limit", 20, "show up to N recent messages; 0 = all (server returns 20, so this only truncates)")
+	return c
 }
 
 func sessionRun(cmd *cobra.Command, id string) error {
-	cl := newClient()
-	s, pending, _, err := cl.GetSession(cmd.Context(), id)
+	limit, err := cmd.Flags().GetInt("limit")
 	if err != nil {
 		return err
 	}
-	printSessionDetails(os.Stdout, s)
+	cl := newClient()
+	s, pending, msgs, err := cl.GetSession(cmd.Context(), id)
+	if err != nil {
+		return err
+	}
+	printSessionDetailsWithMessages(os.Stdout, s, msgs, limit)
 
 	// Mark the session as read (best-effort)
 	_ = cl.MarkRead(cmd.Context(), s.HetuID)
@@ -53,4 +59,21 @@ func printSessionDetails(w io.Writer, s api.SessionDTO) {
 	fmt.Fprintf(w, "External ID:  %s\n", s.ExternalID)
 	fmt.Fprintf(w, "Driven:       %v\n", s.Driven)
 	fmt.Fprintf(w, "Updated:      %s\n", reltime(s.UpdatedAt))
+}
+
+// printSessionDetailsWithMessages prints the session details block followed by
+// the transcript. Messages arrive newest-first (RecentMessages orders seq
+// DESC), so truncate to the newest `limit` and render oldest-first.
+func printSessionDetailsWithMessages(w io.Writer, s api.SessionDTO, msgs []api.MessageDTO, limit int) {
+	printSessionDetails(w, s)
+	if limit > 0 && len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n── Messages ──\n")
+	for i := len(msgs) - 1; i >= 0; i-- {
+		fmt.Fprintf(w, "%s: %s\n", msgs[i].Role, msgs[i].Content)
+	}
 }

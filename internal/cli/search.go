@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -24,8 +23,6 @@ func searchRun(cmd *cobra.Command, query string) error {
 	if err != nil {
 		return err
 	}
-	for _, r := range results {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t(%d hits)\n", r.Agent, r.Title, r.Hits)
-	}
+	printSearchResults(os.Stdout, results)
 	return nil
 }

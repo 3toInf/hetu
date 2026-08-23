@@ -162,6 +162,50 @@ func TestUpdateExternalIDKeepsEventsAndResolvesDupes(t *testing.T) {
 	}
 }
 
+func TestUpdateExternalIDCleansMessagesBeforeDedup(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// driven session, no external id yet (claude mints its id after start)
+	if _, err := st.UpsertSession(ctx, Session{HetuID: "h1", Agent: "claude", ExternalID: "", Status: session.StatusRunning, Driven: true}); err != nil {
+		t.Fatal(err)
+	}
+	// discovery already indexed the live transcript under its own id
+	if _, err := st.UpsertSession(ctx, Session{HetuID: "h2", Agent: "claude", ExternalID: "xyz", Title: "discovered"}); err != nil {
+		t.Fatal(err)
+	}
+	// h2 has synced messages (and an event, keeping the event coverage honest)
+	if err := st.SyncMessages(ctx, "h2", []Message{{Seq: 0, Role: "user", Content: "hello transcript"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, "h2", 1, "text", "discovered event"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.UpdateExternalID(ctx, "claude", "h1", "xyz"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, _ := st.GetSession(ctx, "h1")
+	if !ok || got.ExternalID != "xyz" {
+		t.Fatalf("external id not updated: %+v", got)
+	}
+	if _, ok, _ := st.GetSession(ctx, "h2"); ok {
+		t.Fatal("duplicate discovery row should be removed")
+	}
+	msgs, _ := st.RecentMessages(ctx, "h2", 0)
+	if len(msgs) != 0 {
+		t.Fatalf("messages for removed duplicate should be gone, got %d", len(msgs))
+	}
+	var n int
+	if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM session_messages_fts WHERE session_hetu='h2'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("fts rows for removed duplicate should be gone, got %d", n)
+	}
+}
+
 func TestSessionContentSyncedAt(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

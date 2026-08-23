@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -66,6 +67,38 @@ func (ws *WebServer) call(ctx context.Context, w http.ResponseWriter, op string,
 	ws.srv.dispatch(ctx, &httpWriter{w: w}, api.Request{Op: op, Body: raw})
 }
 
+// decodeBody decodes a JSON request body into v, replying 400 on malformed
+// input. Returns false when the handler must stop.
+func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid JSON body"}`))
+		return false
+	}
+	return true
+}
+
+// requireJSON is the write-side CSRF guard: every API POST must carry an
+// application/json Content-Type. A cross-site HTML form can only produce
+// urlencoded/multipart/text-plain bodies; a cross-site fetch sending a custom
+// type triggers a CORS preflight this server never answers — so in both cases
+// the write is blocked without any token machinery.
+func requireJSON(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api") {
+			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mt != "application/json" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnsupportedMediaType)
+				_, _ = w.Write([]byte(`{"error":"content-type must be application/json"}`))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (ws *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects", func(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +120,41 @@ func (ws *WebServer) Handler() http.Handler {
 	mux.HandleFunc("POST /api/discover", func(w http.ResponseWriter, r *http.Request) {
 		ws.call(r.Context(), w, "discover", api.DiscoverReq{})
 	})
+	mux.HandleFunc("POST /api/sessions/{id}/approve", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Allow     bool   `json:"allow"`
+			ToolUseID string `json:"tool_use_id"`
+			Reason    string `json:"reason"`
+		}
+		if !decodeBody(w, r, &b) {
+			return
+		}
+		ws.call(r.Context(), w, "approve", api.ApproveReq{ID: r.PathValue("id"), ToolUseID: b.ToolUseID, Allow: b.Allow, Reason: b.Reason})
+	})
+	mux.HandleFunc("POST /api/sessions/{id}/send", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Prompt string `json:"prompt"`
+		}
+		if !decodeBody(w, r, &b) {
+			return
+		}
+		ws.call(r.Context(), w, "send", api.SendReq{ID: r.PathValue("id"), Prompt: b.Prompt})
+	})
+	mux.HandleFunc("POST /api/sessions/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		ws.call(r.Context(), w, "resume", api.ResumeReq{ID: r.PathValue("id")})
+	})
+	mux.HandleFunc("POST /api/sessions/{id}/mark_read", func(w http.ResponseWriter, r *http.Request) {
+		ws.call(r.Context(), w, "mark_read", api.MarkReadReq{ID: r.PathValue("id")})
+	})
+	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			ProjectPath string `json:"project_path"`
+		}
+		if !decodeBody(w, r, &b) {
+			return
+		}
+		ws.call(r.Context(), w, "create", api.CreateReq{ProjectPath: b.ProjectPath})
+	})
 	mux.Handle("/", ws.staticHandler())
 	// Wrap the mux with a Host check: a malicious page can re-bind its domain to
 	// 127.0.0.1 (DNS rebinding) and issue same-origin fetches to this server, so
@@ -96,7 +164,7 @@ func (ws *WebServer) Handler() http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		requireJSON(mux).ServeHTTP(w, r)
 	})
 }
 

@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/3toInf/hetu/internal/agent"
+	"github.com/3toInf/hetu/internal/agent/fake"
 	"github.com/3toInf/hetu/internal/project"
 	"github.com/3toInf/hetu/internal/session"
 	"github.com/3toInf/hetu/internal/store"
@@ -173,5 +176,179 @@ func TestWebRejectsForeignHost(t *testing.T) {
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for loopback Host, got %d", resp2.StatusCode)
+	}
+}
+
+// newWebTestServer builds a WebServer backed by a fake driven claude agent —
+// POST action endpoints (create/send/…) hit a real SessionManager without
+// spawning processes. Returns the test server, manager, and fake session.
+func newWebTestServer(t *testing.T) (*httptest.Server, *SessionManager, *fake.Session) {
+	t.Helper()
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	r := project.NewResolver(st)
+	fs := fake.NewSession("h1", "ext1", statusRunningForTest())
+	fa := &fake.Agent{N: "claude", Drv: &fake.Driver{OnStart: func(_ context.Context, _ agent.StartRequest) (agent.Session, error) {
+		return fs, nil
+	}}}
+	m := NewSessionManager(st, r, map[string]agent.Agent{"claude": fa})
+	srv := NewServer(st, m, nil)
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	t.Cleanup(ts.Close)
+	return ts, m, fs
+}
+
+// postJSON POSTs body with an explicit Content-Type and returns the response
+// (caller closes resp.Body). contentType lets tests send the guard-violating
+// form type on purpose.
+func postJSON(t *testing.T, url, contentType, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url, contentType, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	return resp
+}
+
+// bodyString reads and closes a response body.
+func bodyString(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(b)
+}
+
+// TestWebCSRFGuard verifies the write-side CSRF defense: POSTs to /api/* are
+// only accepted with an application/json Content-Type. Cross-site HTML forms
+// can only send urlencoded/multipart/text-plain; a cross-site fetch sending a
+// custom type triggers a CORS preflight this server never answers.
+func TestWebCSRFGuard(t *testing.T) {
+	ts, _, _ := newWebTestServer(t)
+
+	resp := postJSON(t, ts.URL+"/api/discover", "application/x-www-form-urlencoded", "x=1")
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("form POST: expected 415, got %d", resp.StatusCode)
+	}
+	if b := bodyString(t, resp); !strings.Contains(b, "application/json") {
+		t.Fatalf("415 body should name the required type, got %q", b)
+	}
+
+	resp = postJSON(t, ts.URL+"/api/discover", "application/json", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("JSON POST: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// GET is unaffected (no body to forge).
+	if _, err := http.Get(ts.URL + "/api/projects"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestWebActionEndpoints covers the write endpoints' error mapping and the
+// store-only happy path (mark_read). The approve round-trip with a live
+// pending approval is covered separately below.
+func TestWebActionEndpoints(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	defer ts.Close()
+
+	se, _ := st.UpsertSession(ctx, store.Session{HetuID: "s1", Agent: "claude", ExternalID: "e1", CWD: "/x", Title: "T1", Status: session.StatusCompleted, Unread: true})
+
+	// mark_read happy path: 200 + store flips unread off
+	resp := postJSON(t, ts.URL+"/api/sessions/s1/mark_read", "application/json", "{}")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mark_read: expected 200, got %d (body %s)", resp.StatusCode, bodyString(t, resp))
+	}
+	got, ok, _ := st.GetSession(ctx, se.HetuID)
+	if !ok || got.Unread {
+		t.Fatal("mark_read did not clear unread in store")
+	}
+
+	// approve with no pending → 400 JSON error
+	resp = postJSON(t, ts.URL+"/api/sessions/s1/approve", "application/json", `{"allow":true}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("approve no-pending: expected 400, got %d", resp.StatusCode)
+	}
+	if b := bodyString(t, resp); !strings.Contains(b, "no pending approval") {
+		t.Fatalf("approve no-pending body: %q", b)
+	}
+
+	// send on a non-driven session → 400
+	resp = postJSON(t, ts.URL+"/api/sessions/s1/send", "application/json", `{"prompt":"hi"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("send non-driven: expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// unknown session → 404
+	resp = postJSON(t, ts.URL+"/api/sessions/missing/send", "application/json", `{"prompt":"hi"}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing session: expected 404, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// malformed JSON body → 400
+	resp = postJSON(t, ts.URL+"/api/sessions/s1/approve", "application/json", "{not json")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad body: expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestWebApproveRoundTrip drives a pending approval through the fake agent,
+// then resolves it over HTTP — the full M3 loop in miniature.
+func TestWebApproveRoundTrip(t *testing.T) {
+	ts, m, _ := newWebTestServer(t)
+	ctx := context.Background()
+	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decided := make(chan bool, 1)
+	go func() {
+		d, err := m.RequestPermission(ctx, hid, "toolu_1", "Bash", `{"command":"ls"}`)
+		decided <- err == nil && d.Allow
+	}()
+	waitForApprovalPending(t, m, hid, "toolu_1")
+
+	resp := postJSON(t, ts.URL+"/api/sessions/"+hid+"/approve", "application/json",
+		`{"allow":true,"tool_use_id":"toolu_1"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve: expected 200, got %d (body %s)", resp.StatusCode, bodyString(t, resp))
+	}
+	resp.Body.Close()
+
+	select {
+	case ok := <-decided:
+		if !ok {
+			t.Fatal("approval resolved but decision was not allow")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("approval was never resolved by the HTTP call")
+	}
+}
+
+// TestWebCreateSession: POST /api/sessions spawns a driven fake session.
+func TestWebCreateSession(t *testing.T) {
+	ts, _, _ := newWebTestServer(t)
+	resp := postJSON(t, ts.URL+"/api/sessions", "application/json", `{"project_path":"/x"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create: expected 200, got %d (body %s)", resp.StatusCode, bodyString(t, resp))
+	}
+	b := bodyString(t, resp)
+	if !strings.Contains(b, `"id"`) {
+		t.Fatalf("create body missing id: %s", b)
 	}
 }

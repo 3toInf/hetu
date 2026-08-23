@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net/http"
@@ -350,5 +351,142 @@ func TestWebCreateSession(t *testing.T) {
 	b := bodyString(t, resp)
 	if !strings.Contains(b, `"id"`) {
 		t.Fatalf("create body missing id: %s", b)
+	}
+}
+
+// readSSELine reads one line from an SSE response body (blocking).
+func readSSELine(t *testing.T, br *bufio.Reader) string {
+	t.Helper()
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read SSE line: %v", err)
+	}
+	return strings.TrimRight(line, "\n")
+}
+
+// TestWebSSEStream subscribes over HTTP, sees an emitted event, then drops the
+// connection — the subscriber must be cleaned up (no leak).
+func TestWebSSEStream(t *testing.T) {
+	ts, m, fs := newWebTestServer(t)
+	ctx := context.Background()
+	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + hid + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q, want text/event-stream", ct)
+	}
+	br := bufio.NewReader(resp.Body)
+
+	// The handler subscribes before writing the headers, so once headers are
+	// back this Emit must reach us.
+	fs.Emit(agent.Event{Type: agent.EventText, Text: "hi", Seq: 1})
+
+	got := ""
+	deadline := time.Now().Add(2 * time.Second)
+	for got == "" && time.Now().Before(deadline) {
+		line := readSSELine(t, br)
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"type":"text"`) {
+			got = line
+		}
+	}
+	if got == "" {
+		t.Fatal("never saw the text event in the SSE stream")
+	}
+	if !strings.Contains(got, `"text":"hi"`) {
+		t.Fatalf("event payload wrong: %q", got)
+	}
+
+	// Disconnect: close the body; the handler's r.Context() fires, cancel runs,
+	// and the subscriber is removed from the live session.
+	resp.Body.Close()
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		l, ok := m.live[hid]
+		m.mu.Unlock()
+		if !ok {
+			break // session gone entirely — also clean
+		}
+		l.mu.Lock()
+		n := len(l.subscribers)
+		l.mu.Unlock()
+		if n == 0 {
+			return // clean — test passes
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("subscriber leaked after SSE disconnect")
+}
+
+// TestWebSSEEndOnSessionClose: when the driven session finishes, the pump
+// closes subscriber channels and the endpoint must emit `event: end`.
+func TestWebSSEEndOnSessionClose(t *testing.T) {
+	ts, m, fs := newWebTestServer(t)
+	ctx := context.Background()
+	hid, err := m.Ensure(ctx, "claude", "ext1", "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + hid + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	br := bufio.NewReader(resp.Body)
+
+	_ = fs.Close() // ends the pump → closes subscribers
+
+	sawEnd := false
+	deadline := time.Now().Add(2 * time.Second)
+	for !sawEnd && time.Now().Before(deadline) {
+		if line := readSSELine(t, br); line == "event: end" {
+			sawEnd = true
+		}
+	}
+	if !sawEnd {
+		t.Fatal("never saw `event: end` after session close")
+	}
+}
+
+// TestWebSSENotDriven: a stored (non-driven) session has no event stream.
+func TestWebSSENotDriven(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(ctx, tempPath(t))
+	t.Cleanup(func() { st.Close() })
+	st.UpsertSession(ctx, store.Session{HetuID: "s1", Agent: "claude", ExternalID: "e1", CWD: "/x", Status: session.StatusCompleted})
+	mgr := NewSessionManager(st, project.NewResolver(st), nil)
+	srv := NewServer(st, mgr, nil)
+	ws := NewWebServer(srv, "", "")
+	ts := httptest.NewServer(ws.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/sessions/s1/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-driven session, got %d", resp.StatusCode)
+	}
+	if b := bodyString(t, resp); !strings.Contains(b, "not driven") {
+		t.Fatalf("body should explain, got %q", b)
+	}
+	// (no defer — bodyString already closed it)
+
+	// unknown session → 404
+	resp2, err := http.Get(ts.URL + "/api/sessions/missing/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp2.StatusCode)
 	}
 }

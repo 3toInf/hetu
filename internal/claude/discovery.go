@@ -60,6 +60,26 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+// messageText joins all text blocks in a message's content with newlines.
+// Non-text blocks (e.g. tool_use) are skipped.
+func messageText(msg map[string]interface{}) string {
+	if msg == nil {
+		return ""
+	}
+	c, _ := msg["content"].([]interface{})
+	var parts []string
+	for _, item := range c {
+		if m, ok := item.(map[string]interface{}); ok {
+			if t, ok := m["type"].(string); ok && t == "text" {
+				if txt, ok := m["text"].(string); ok {
+					parts = append(parts, txt)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func parseTimestamp(ts string) time.Time {
 	if ts == "" {
 		return time.Time{}
@@ -131,6 +151,11 @@ func parseTranscript(path string) (agent.DiscoveredSession, bool) {
 		return agent.DiscoveredSession{}, false
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return agent.DiscoveredSession{}, false
+	}
+	mtime := fi.ModTime()
 
 	var lines []transcriptLine
 	sc := bufio.NewScanner(f)
@@ -151,9 +176,17 @@ func parseTranscript(path string) (agent.DiscoveredSession, bool) {
 		Status:     inferStatus(lines),
 	}
 	count := 0
-	for _, l := range lines {
+	for i, l := range lines {
 		if l.Type == "user" || l.Type == "assistant" {
 			count++
+			if txt := messageText(l.Message); txt != "" {
+				s.Messages = append(s.Messages, agent.DiscoveredMessage{
+					Role:    l.Type,
+					Content: txt,
+					Seq:     i,
+					TS:      parseTimestamp(l.Timestamp).Unix(),
+				})
+			}
 		}
 		if s.Title == "" && l.Type == "user" {
 			s.Title = firstUserText(l.Message)
@@ -166,5 +199,6 @@ func parseTranscript(path string) (agent.DiscoveredSession, bool) {
 		}
 	}
 	s.MessageCount = count
+	s.TranscriptMtime = mtime
 	return s, true
 }

@@ -13,15 +13,24 @@ type Agent interface {
 	Driver() Driver
 }
 
+type DiscoveredMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Seq     int    `json:"seq"`
+	TS      int64  `json:"ts"`
+}
+
 type DiscoveredSession struct {
-	Agent        string         `json:"agent"`
-	ExternalID   string         `json:"external_id"`
-	CWD          string         `json:"cwd"`
-	Title        string         `json:"title"`
-	Status       session.Status `json:"status"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	MessageCount int            `json:"message_count"`
+	Agent           string              `json:"agent"`
+	ExternalID      string              `json:"external_id"`
+	CWD             string              `json:"cwd"`
+	Title           string              `json:"title"`
+	Status          session.Status      `json:"status"`
+	CreatedAt       time.Time           `json:"created_at"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+	MessageCount    int                 `json:"message_count"`
+	Messages        []DiscoveredMessage `json:"messages"`
+	TranscriptMtime time.Time           `json:"transcript_mtime"`
 }
 
 type DiscoverOpts struct {

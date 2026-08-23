@@ -1,0 +1,1 @@
+import{d as s,c as n,a as o,o as t}from"./index-CWLt_2VS.js";const i=s({__name:"SessionView",setup(a){return(r,e)=>(t(),n("div",null,[...e[0]||(e[0]=[o("h2",null,"Session",-1),o("p",{class:"muted"},"Coming soon.",-1)])]))}});export{i as default};

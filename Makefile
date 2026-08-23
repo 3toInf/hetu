@@ -1,7 +1,9 @@
 GO ?= go
-.PHONY: build test vet fmt all dist
+.PHONY: build test vet fmt all dist web
 all: build
-build:
+web:
+	cd web && npm install && npm run build
+build: web
 	$(GO) build -o bin/hetu ./cmd/hetu
 	$(GO) build -o bin/hetud ./cmd/hetud
 test:

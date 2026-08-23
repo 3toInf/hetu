@@ -171,9 +171,15 @@ func (s *Server) dispatch(ctx context.Context, w io.Writer, req api.Request) {
 				})
 			}
 		}
+		msgs, _ := s.st.RecentMessages(ctx, se.HetuID, 20)
+		msgDTOs := make([]api.MessageDTO, 0, len(msgs))
+		for _, m := range msgs {
+			msgDTOs = append(msgDTOs, api.MessageDTO{Role: m.Role, Content: m.Content, Seq: m.Seq, TS: m.TS})
+		}
 		replyOK(w, map[string]any{
-			"session": toDTO(s.st, se),
-			"pending": pendingDTOs,
+			"session":  toDTO(s.st, se),
+			"pending":  pendingDTOs,
+			"messages": msgDTOs,
 		})
 	case "resume":
 		var b api.ResumeReq

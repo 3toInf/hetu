@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,20 @@ import (
 func tempPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "t.sqlite")
+}
+
+// sockPath returns a short unix-socket path for this test. t.TempDir() is
+// derived from the test name and can exceed macOS's 104-byte sun_path limit
+// (e.g. TestListSessionsUnknownProjectPath), making listen/dial fail with
+// EINVAL. A top-level MkdirTemp keeps the path ~60 bytes on every platform.
+func sockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 func statusRunningForTest() session.Status {

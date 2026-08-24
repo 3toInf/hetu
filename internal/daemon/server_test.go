@@ -72,7 +72,7 @@ func TestServerListProjects(t *testing.T) {
 	st.UpsertProject(ctx, "Alpha", "/x/alpha")
 	mgr := NewSessionManager(st, project.NewResolver(st), nil)
 	srv := NewServer(st, mgr, nil)
-	sock := tempPath(t) + ".sock"
+	sock := sockPath(t)
 	go srv.Serve(ctx, sock)
 	t.Cleanup(func() { srv.Shutdown(ctx) })
 
@@ -96,7 +96,7 @@ func TestNeedsAttention(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	mgr := NewSessionManager(st, project.NewResolver(st), nil)
 	srv := NewServer(st, mgr, nil)
-	sock := tempPath(t) + ".sock"
+	sock := sockPath(t)
 	go srv.Serve(ctx, sock)
 	t.Cleanup(func() { srv.Shutdown(ctx) })
 
@@ -175,7 +175,7 @@ func TestListSessionsUnknownProjectPath(t *testing.T) {
 	st.UpsertProject(ctx, "Alpha", "/x/alpha")
 	mgr := NewSessionManager(st, project.NewResolver(st), nil)
 	srv := NewServer(st, mgr, nil)
-	sock := tempPath(t) + ".sock"
+	sock := sockPath(t)
 	go srv.Serve(ctx, sock)
 	t.Cleanup(func() { srv.Shutdown(ctx) })
 

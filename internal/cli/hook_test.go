@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,20 @@ func tempPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	return dir + "/hetu"
+}
+
+// sockPath returns a short unix-socket path for this test. t.TempDir() is
+// derived from the test name and can exceed macOS's 104-byte sun_path limit,
+// making listen/dial fail with EINVAL. A top-level MkdirTemp keeps the path
+// ~60 bytes on every platform.
+func sockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 // testServer wraps a real server, session manager, and client for integration testing
@@ -50,7 +66,7 @@ func startTestServer(t *testing.T) *testServer {
 	mgr := daemon.NewSessionManager(st, project.NewResolver(st), map[string]agent.Agent{"claude": fa})
 	srv := daemon.NewServer(st, mgr, nil)
 
-	sock := tempPath(t) + ".sock"
+	sock := sockPath(t)
 	go srv.Serve(ctx, sock)
 
 	// Wait for server to be ready to avoid race during cleanup
